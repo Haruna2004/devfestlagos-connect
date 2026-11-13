@@ -86,11 +86,29 @@ export function PersonSheet({
 
               {full?.bio && <p className="mt-5 text-[17px] leading-relaxed">{full.bio}</p>}
 
-              {full && full.lookingFor.length > 0 && (
+              {full && full.skills.length > 0 && (
+                <div className="mt-5">
+                  <div className="mb-2 text-[12px] font-semibold tracking-wide text-muted uppercase">Works with</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {full.skills.map((t) => (
+                      <Tag key={t} tone="ink">
+                        {t}
+                      </Tag>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {full && full.lookingFor.length + full.wantsSkills.length > 0 && (
                 <div className="mt-5">
                   <div className="mb-2 text-[12px] font-semibold tracking-wide text-muted uppercase">Looking for</div>
                   <div className="flex flex-wrap gap-1.5">
                     {full.lookingFor.map((t) => (
+                      <Tag key={t} tone="amber">
+                        {t}
+                      </Tag>
+                    ))}
+                    {full.wantsSkills.map((t) => (
                       <Tag key={t}>{t}</Tag>
                     ))}
                   </div>

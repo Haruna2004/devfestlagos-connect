@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { INTRO_MIN, match } from "../shared/match";
+import { INTRO_MIN, match, rarityFrom } from "../shared/match";
+import { cleanSkills, SKILL_LIMITS } from "../shared/skills";
 import { LIMITS, LOOKING_FOR, ROLE_TAGS } from "../shared/types";
 import type {
   Band,
@@ -34,6 +35,8 @@ type Row = {
   find_me: string;
   tags: string;
   looking_for: string;
+  skills: string;
+  wants_skills: string;
   links: string;
   photo: string | null;
   visible: number;
@@ -101,6 +104,8 @@ function toProfile(r: Row): Profile {
     findMe: r.find_me,
     tags: parse(r.tags, []),
     lookingFor: parse(r.looking_for, []),
+    skills: parse(r.skills, []),
+    wantsSkills: parse(r.wants_skills, []),
     links: parse(r.links, {}),
     photo: r.photo ? `/photos/${r.photo}` : null,
   };
@@ -147,6 +152,8 @@ function toColumns(input: ProfileInput) {
         .slice(0, 4),
     );
   }
+  if (Array.isArray(input.skills)) cols.skills = JSON.stringify(cleanSkills(input.skills, SKILL_LIMITS.have));
+  if (Array.isArray(input.wantsSkills)) cols.wants_skills = JSON.stringify(cleanSkills(input.wantsSkills, SKILL_LIMITS.want));
   if (input.links && typeof input.links === "object") {
     const links: Links = {
       linkedin: cleanLink(input.links.linkedin),
@@ -334,12 +341,14 @@ app.post("/api/me/ping", auth, async (c) => {
   const mine = toProfile(me);
   const t = now();
   const people: NearbyPerson[] = [];
-  for (const r of await getSnapshot(c.env)) {
+  const snap = await getSnapshot(c.env);
+  const rarity = rarityFrom(snap.map((r) => ({ skills: parse<string[]>(r.skills, []) })));
+  for (const r of snap) {
     if (r.id === me.id || r.lat == null || r.lng == null || blocked.has(r.id)) continue;
     const d = metres(lat, lng, r.lat, r.lng);
     const p = toProfile(r);
     const b = band(d);
-    const m = match(mine, p, b);
+    const m = match(mine, p, b, rarity);
     people.push({
       id: p.id,
       name: p.name,
@@ -349,6 +358,7 @@ app.post("/api/me/ping", auth, async (c) => {
       findMe: p.findMe,
       tags: p.tags,
       lookingFor: p.lookingFor,
+      skills: p.skills,
       distance: Math.max(5, Math.round(d / 5) * 5),
       band: b,
       seenAgo: Math.max(0, Math.round((t - (r.seen_at ?? t)) / 1000)),

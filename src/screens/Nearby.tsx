@@ -9,6 +9,7 @@ import { Radar } from "../components/Radar";
 import { ago, km } from "../components/format";
 import { IconChevron, IconEyeOff, IconPin, IconShare, IconSpark } from "../components/icons";
 import type { useNearby } from "../lib/useNearby";
+import { missing, NEXT_LABEL, STEPS } from "../lib/strength";
 
 const SECTIONS: { band: Band; title: string; hint: string }[] = [
   { band: "close", title: "Right around you", hint: "within ~30m" },
@@ -16,40 +17,38 @@ const SECTIONS: { band: Band; title: string; hint: string }[] = [
   { band: "venue", title: "Around the venue", hint: "further out" },
 ];
 
-const MATCHES = "Matches";
 
 export function Nearby({
   me,
   nearby,
   onPick,
   onMessage,
-  onEditFindMe,
-  onEditCard,
+  onBoost,
 }: {
   me: MyProfile;
   nearby: ReturnType<typeof useNearby>;
   onPick: (p: NearbyPerson) => void;
   onMessage: (p: NearbyPerson) => void;
-  onEditFindMe: () => void;
-  onEditCard: () => void;
+  onBoost: () => void;
 }) {
   const { geo, start, result, accuracy, error } = nearby;
-  const [filter, setFilter] = useState<string>("All");
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const [q, setQ] = useState("");
 
   const people = result?.people ?? [];
   const introIds = useMemo(() => new Set(result?.intros ?? []), [result]);
   const intros = (result?.intros ?? []).map((id) => people.find((p) => p.id === id)!).filter(Boolean);
 
-  const filters = useMemo(() => {
-    const seen = new Set<string>();
-    people.forEach((p) => p.tags.forEach((t) => seen.add(t)));
-    return ["All", ...(introIds.size ? [MATCHES] : []), ...seen];
-  }, [people, introIds]);
-  const list =
-    filter === "All" ? people : filter === MATCHES ? people.filter((p) => introIds.has(p.id)) : people.filter((p) => p.tags.includes(filter));
+  // Search across name, role, company, tags and skills, e.g. "flutter" or "recruiter".
+  const query = q.trim().toLowerCase();
+  const list = people.filter(
+    (p) =>
+      (!onlyMatches || p.match > 0) &&
+      (!query || [p.name, p.title, p.company, ...p.tags, ...p.skills].some((f) => f.toLowerCase().includes(query))),
+  );
 
   const ready = geo === "on" && result?.atVenue;
-  const noIntroInfo = me.tags.length === 0 && me.lookingFor.length === 0;
+  const todo = missing(me);
 
   return (
     <div className="min-h-full pb-28">
@@ -92,16 +91,7 @@ export function Nearby({
           />
         ) : (
           <>
-            {!me.findMe && (
-              <Banner tone="amber" icon={<IconPin width={20} height={20} />} onClick={onEditFindMe}>
-                Add where people can find you
-              </Banner>
-            )}
-            {noIntroInfo && (
-              <Banner tone="amber" icon={<IconSpark width={18} height={18} />} onClick={onEditCard}>
-                Add what you are and what you're looking for to get intros
-              </Banner>
-            )}
+            {todo.length > 0 && <StrengthCard doneCount={STEPS.length - todo.length} next={NEXT_LABEL[todo[0]]} onClick={onBoost} />}
 
             {intros.length > 0 && (
               <section className="mb-6">
@@ -116,21 +106,24 @@ export function Nearby({
               </section>
             )}
 
-            {filters.length > 2 && (
-              <div className="no-scrollbar flex gap-2 overflow-x-auto px-5 pb-1">
-                {filters.map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => setFilter(f)}
-                    className={`shrink-0 border-2 border-ink px-3.5 py-1.5 text-[15px] font-medium ${
-                      filter === f ? "bg-ink text-paper" : "bg-card"
-                    }`}
-                  >
-                    {f === MATCHES ? `★ ${f}` : f}
-                  </button>
-                ))}
+            {people.length > 3 && (
+              <div className="flex gap-2 px-5">
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search skills, roles, names"
+                  autoCapitalize="off"
+                  className="h-11 min-w-0 flex-1 border-2 border-ink bg-card px-3 outline-none placeholder:text-ink/35 focus:bg-white"
+                />
+                <button
+                  onClick={() => setOnlyMatches(!onlyMatches)}
+                  className={`h-11 shrink-0 border-2 border-ink px-3 text-[15px] font-medium ${onlyMatches ? "bg-ink text-paper" : "bg-card"}`}
+                >
+                  ★ Matches
+                </button>
               </div>
             )}
+            {list.length === 0 && people.length > 0 && <p className="px-5 pt-6 text-center text-[15px] text-muted">No one matches that right now.</p>}
 
             {people.length === 0 ? (
               <Empty
@@ -215,6 +208,29 @@ function PersonRow({ p, i, isMatch, onClick }: { p: NearbyPerson; i: number; isM
         </div>
       </button>
     </motion.li>
+  );
+}
+
+function StrengthCard({ doneCount, next, onClick }: { doneCount: number; next: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="press pop mx-5 mb-6 block w-[calc(100%-2.5rem)] border-2 border-ink bg-amber p-4 text-left">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 font-display text-[21px] leading-none">
+          <IconSpark width={16} height={16} /> Get better intros
+        </span>
+        <span className="text-[13px] font-medium">
+          {doneCount}/{STEPS.length}
+        </span>
+      </div>
+      <div className="mt-3 flex gap-1">
+        {STEPS.map((_, n) => (
+          <span key={n} className={`h-1.5 flex-1 ${n < doneCount ? "bg-ink" : "bg-ink/20"}`} />
+        ))}
+      </div>
+      <div className="mt-3 flex items-center justify-between text-[15px]">
+        {next} <IconChevron width={18} height={18} />
+      </div>
+    </button>
   );
 }
 

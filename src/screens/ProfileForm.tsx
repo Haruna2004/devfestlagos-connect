@@ -6,6 +6,9 @@ import type { MyProfile, ProfileInput } from "../../shared/types";
 import { Avatar } from "../components/Avatar";
 import { TopBar } from "../components/Brand";
 import { ChipPicker } from "../components/Chips";
+import { SkillPicker } from "../components/SkillPicker";
+import { SKILL_LIMITS } from "../../shared/skills";
+import { wantsLabel } from "../lib/strength";
 import { IconCamera, IconClose } from "../components/icons";
 import { prepPhoto } from "../lib/image";
 
@@ -29,6 +32,10 @@ export function ProfileForm({
   const [bio, setBio] = useState(initial?.bio ?? "");
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
   const [lookingFor, setLookingFor] = useState<string[]>(initial?.lookingFor ?? []);
+  const [skills, setSkills] = useState<string[]>(initial?.skills ?? []);
+  const [wantsSkills, setWantsSkills] = useState<string[]>(initial?.wantsSkills ?? []);
+  // Creating a card asks only for the basics. Everything else comes later, one step at a time.
+  const full = mode === "edit";
   const [linkedin, setLinkedin] = useState(initial?.links.linkedin ?? "");
   const [x, setX] = useState(initial?.links.x ?? "");
   const [website, setWebsite] = useState(initial?.links.website ?? "");
@@ -56,7 +63,9 @@ export function ProfileForm({
     setError(null);
     try {
       await onSubmit({
-        input: { name, title, company, findMe, bio, tags, lookingFor, links: { linkedin, x, website } },
+        input: full
+          ? { name, title, company, findMe, bio, tags, lookingFor, skills, wantsSkills, links: { linkedin, x, website } }
+          : { name, tags },
         photo,
       });
     } catch (err) {
@@ -80,7 +89,8 @@ export function ProfileForm({
       </div>
 
       <div className="flex-1 px-5 pb-36">
-        <h1 className="pt-7 font-display text-[40px] leading-none">{mode === "create" ? "Make your card" : "Edit your card"}</h1>
+        <h1 className="pt-7 font-display text-[40px] leading-none">{full ? "Edit your card" : "Make your card"}</h1>
+        {!full && <p className="mt-2 text-[16px] text-muted">Just the basics. You can add more later.</p>}
 
         <div className="mt-6 flex items-center gap-4">
           <button type="button" onClick={() => fileRef.current?.click()} className="press relative" aria-label="Add photo">
@@ -107,22 +117,34 @@ export function ProfileForm({
           <Field label="Name" required>
             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.name} autoComplete="name" placeholder="Ada Okafor" className={inputCls} />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Role">
-              <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={LIMITS.title} placeholder="Android Engineer" className={inputCls} />
-            </Field>
-            <Field label="Company">
-              <input value={company} onChange={(e) => setCompany(e.target.value)} maxLength={LIMITS.company} autoComplete="organization" placeholder="Moniepoint" className={inputCls} />
-            </Field>
-          </div>
+          {full && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Role">
+                <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={LIMITS.title} placeholder="Android Engineer" className={inputCls} />
+              </Field>
+              <Field label="Company">
+                <input value={company} onChange={(e) => setCompany(e.target.value)} maxLength={LIMITS.company} autoComplete="organization" placeholder="Moniepoint" className={inputCls} />
+              </Field>
+            </div>
+          )}
         </Section>
 
-        <Section title="I am" hint="Up to 3. Used for intros.">
+        <Section title="I am" hint="Up to 3">
           <ChipPicker options={ROLE_TAGS} value={tags} onChange={setTags} max={3} />
         </Section>
 
-        <Section title="I'm looking for" hint="Up to 4. Used for intros.">
+        {full && (
+          <>
+        <Section title="What I work with" hint={`Up to ${SKILL_LIMITS.have}`}>
+          <SkillPicker value={skills} onChange={setSkills} max={SKILL_LIMITS.have} tags={tags} />
+        </Section>
+
+        <Section title="I'm looking for" hint="Up to 4">
           <ChipPicker options={LOOKING_FOR} value={lookingFor} onChange={setLookingFor} max={4} />
+        </Section>
+
+        <Section title={wantsLabel(lookingFor)} hint={`Optional, up to ${SKILL_LIMITS.want}`}>
+          <SkillPicker value={wantsSkills} onChange={setWantsSkills} max={SKILL_LIMITS.want} tags={tags} placeholder="e.g. Kubernetes, PyTorch, Fundraising" />
         </Section>
 
         <Section title="Where can people find you?" hint="Update it as you move.">
@@ -145,6 +167,8 @@ export function ProfileForm({
           <input value={x} onChange={(e) => setX(e.target.value)} inputMode="url" autoCapitalize="off" placeholder="x.com/you" className={inputCls} />
           <input value={website} onChange={(e) => setWebsite(e.target.value)} inputMode="url" autoCapitalize="off" placeholder="github.com/you or yoursite.com" className={inputCls} />
         </Section>
+          </>
+        )}
 
         <p className="mt-7 text-[13px] text-muted">
           Your card is public to people at {EVENT.name}. Your exact location is never shown to anyone.

@@ -23,11 +23,15 @@ export function setIdentity(i: Identity | null) {
 }
 
 // Restore link: /#k=<id>.<secret>
+export function parseRestore(text: string): Identity | null {
+  const m = text.match(/k=([a-z0-9]+)\.([a-z0-9]+)/);
+  return m ? { id: m[1], secret: m[2] } : null;
+}
+
 export function readRestoreHash(): Identity | null {
-  const m = location.hash.match(/k=([a-z0-9]+)\.([a-z0-9]+)/);
-  if (!m) return null;
-  history.replaceState(null, "", location.pathname + location.search);
-  return { id: m[1], secret: m[2] };
+  const id = parseRestore(location.hash);
+  if (id) history.replaceState(null, "", location.pathname + location.search);
+  return id;
 }
 
 export const restoreLink = (i: Identity) => `${location.origin}/#k=${i.id}.${i.secret}`;

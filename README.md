@@ -9,7 +9,8 @@ A community project, open to every DevFest volunteer and attendee who wants to h
 ## What it does
 
 - **Nearby.** Your phone shares its location while the app is open. You see who else is at the venue, closest first: right here (~30m), nearby (~100m), around the venue.
-- **Intros.** You say what you are (Engineer, Designer, Recruiter…) and what you're looking for (a job, mentors, a cofounder…). Connect matches you with people nearby and tells you why: *"Chioma is hiring, and you're looking for a job."* When a strong match walks near you, you get a pop-up.
+- **Intros.** You say what you are (Engineer, Recruiter…), what you work with (Go, Flutter, PyTorch, Fundraising…), what you're looking for (a job, mentors, a cofounder…) and which skills you're after. Connect combines them and tells you why to meet: *"Chioma is hiring for Kubernetes and Go, and you know both."* Rare skills in the room count more than common ones. When a strong match walks near you, you get a pop-up.
+- **Light setup.** Making a card takes a name and a tap. Skills and goals come later, one short question at a time, from a "Get better intros" card.
 - **Messages.** Text-only chat, so you can say "I'm by the Google booth, blue shirt" and actually find each other. Block works both ways.
 - **No sign-up.** Open the link, make a card, done. A "login link" moves your card to another phone.
 - **Private by default.** Nobody ever sees your coordinates, only a rounded distance. Your location is only stored while you're at the venue (it's cleared when you leave), and you drop off everyone's list 10 minutes after you close the app.
@@ -31,6 +32,7 @@ Phone (React PWA)  ──HTTPS──►  Cloudflare Worker (Hono)  ──►  D1
 ```
 shared/event.ts   ← event name, venue name, role + "looking for" options. Start here.
 shared/match.ts   ← intro rules. Easy place to contribute.
+shared/skills.ts  skill catalog + suggestions per role
 shared/types.ts   types shared by app and API
 worker/index.ts   the whole API
 src/              React app (screens/, components/, lib/)

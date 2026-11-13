@@ -16,6 +16,9 @@ import { ProfileForm } from "./screens/ProfileForm";
 import type { FormResult } from "./screens/ProfileForm";
 import { PublicProfile } from "./screens/PublicProfile";
 import { Welcome } from "./screens/Welcome";
+import { Boost } from "./screens/Boost";
+import { InstallSheet } from "./components/InstallSheet";
+import { alreadyAsked, canInstall, markAsked } from "./lib/install";
 
 const CACHE = "connect.me";
 const SEEN_INTROS = "connect.introsSeen";
@@ -100,7 +103,14 @@ export default function App() {
 
   if (!identity || !me) {
     if (identity && !me) return <div className="h-full bg-ink" />;
-    return started ? <ProfileForm mode="create" onSubmit={create} /> : <Welcome onStart={() => setStarted(true)} />;
+    return started ? <ProfileForm mode="create" onSubmit={create} /> : <Welcome
+        onStart={() => setStarted(true)}
+        onRestore={(id) => {
+          setIdentity(id);
+          save(CACHE, null);
+          setId(id);
+        }}
+      />;
   }
 
   return <Main identity={identity} me={me} saveMe={saveMe} onSignedOut={() => setId(null)} />;
@@ -125,7 +135,16 @@ function Main({
   const [picked, setPicked] = useState<NearbyPerson | null>(null);
   const [chatWith, setChatWith] = useState<PersonLite | null>(null);
   const [toast, setToast] = useState<NearbyPerson | null>(null);
+  const [boosting, setBoosting] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
   const lastToast = useRef(0);
+
+  // Ask to install once, after a first good moment (an intro or a chat).
+  const maybeAskInstall = useCallback(() => {
+    if (alreadyAsked() || !canInstall()) return;
+    markAsked();
+    setTimeout(() => setInstallOpen(true), 800);
+  }, []);
   const nearby = useNearby(identity);
   const people = nearby.result?.people ?? [];
   const unread = nearby.result?.unread ?? 0;
@@ -144,9 +163,12 @@ function Main({
     lastToast.current = Date.now();
     setToast(fresh);
     navigator.vibrate?.(30);
-    const t = setTimeout(() => setToast(null), 7000);
+    const t = setTimeout(() => {
+      setToast(null);
+      maybeAskInstall();
+    }, 7000);
     return () => clearTimeout(t);
-  }, [nearby.result]);
+  }, [nearby.result, maybeAskInstall]);
 
   async function edit({ input, photo }: FormResult) {
     let p = await api.update(identity, input);
@@ -179,11 +201,7 @@ function Main({
               nearby={nearby}
               onPick={setPicked}
               onMessage={openChat}
-              onEditFindMe={() => {
-                setFocusFindMe(true);
-                setTab("me");
-              }}
-              onEditCard={() => setEditing(true)}
+              onBoost={() => setBoosting(true)}
             />
           ) : tab === "messages" ? (
             <Messages identity={identity} unread={unread} onOpen={openChat} />
@@ -269,6 +287,7 @@ function Main({
               onBack={() => {
                 setChatWith(null);
                 void nearby.refresh();
+                maybeAskInstall();
               }}
               onOpenProfile={
                 people.some((p) => p.id === chatWith.id)
@@ -283,6 +302,31 @@ function Main({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {boosting && (
+          <motion.div
+            initial={{ y: "100%" }}
+            animate={{ y: 0 }}
+            exit={{ y: "100%" }}
+            transition={{ type: "spring", stiffness: 320, damping: 34 }}
+            className="fixed inset-0 z-50"
+          >
+            <Boost
+              me={me}
+              onSave={async (input) => {
+                saveMe(await api.update(identity, input));
+              }}
+              onClose={() => {
+                setBoosting(false);
+                void nearby.refresh();
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <InstallSheet open={installOpen} identity={identity} onClose={() => setInstallOpen(false)} />
 
       <AnimatePresence>
         {editing && (

@@ -92,6 +92,18 @@ export function Me({
               ))}
             </div>
           )}
+          {me.skills.length > 0 && (
+            <p className="mt-3 text-[14px]">
+              <span className="text-muted">Works with </span>
+              {me.skills.join(", ")}
+            </p>
+          )}
+          {me.wantsSkills.length > 0 && (
+            <p className="mt-1 text-[14px]">
+              <span className="text-muted">Looking for </span>
+              {me.wantsSkills.join(", ")}
+            </p>
+          )}
           {me.bio && <p className="mt-3 text-[15px] leading-snug">{me.bio}</p>}
         </div>
 
@@ -146,8 +158,8 @@ export function Me({
           <div className="my-3 h-0.5 bg-ink/10" />
           <Row
             icon={<IconLink width={20} height={20} />}
-            title="Save my login link"
-            sub={copied === "key" ? "Copied! Keep it private." : "Open it on another phone to get your card back"}
+            title="Use Connect on another phone"
+            sub={copied === "key" ? "Login link copied. Keep it private." : "Copies a private link that brings your card with you"}
             onClick={() => copy("key", restoreLink(identity))}
           />
         </Card>

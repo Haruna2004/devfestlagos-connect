@@ -56,6 +56,12 @@ export function PublicProfile({ id, onOpenApp }: { id: string; onOpenApp: () => 
                   <IconPin width={16} height={16} className="text-flame" /> {p.findMe}
                 </p>
               )}
+              {p.skills.length > 0 && (
+                <p className="mt-4 text-[15px]">
+                  <span className="text-muted">Works with </span>
+                  {p.skills.join(", ")}
+                </p>
+              )}
               {p.bio && <p className="mt-4 text-[16px] leading-snug">{p.bio}</p>}
               <div className="mt-5 flex gap-2">
                 {p.links.linkedin && <Square href={p.links.linkedin} label="LinkedIn"><IconLinkedIn /></Square>}

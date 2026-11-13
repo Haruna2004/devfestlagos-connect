@@ -9,6 +9,8 @@ export type Profile = {
   findMe: string;
   tags: string[];
   lookingFor: string[];
+  skills: string[]; // what I work with
+  wantsSkills: string[]; // skills I'm looking for in others
   links: Links;
   photo: string | null; // url path, e.g. /photos/abc/123.jpg
 };
@@ -21,7 +23,7 @@ export type Band = "close" | "near" | "venue";
 
 export type NearbyPerson = Pick<
   Profile,
-  "id" | "name" | "title" | "company" | "photo" | "findMe" | "tags" | "lookingFor"
+  "id" | "name" | "title" | "company" | "photo" | "findMe" | "tags" | "lookingFor" | "skills"
 > & {
   distance: number; // metres, rounded
   band: Band;

@@ -1,35 +1,38 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion } from "motion/react";
 import { EVENT } from "../../shared/event";
 import { TopBar } from "../components/Brand";
-import { IconPlusSquare, IconShare } from "../components/icons";
-
-type BIPEvent = Event & { prompt: () => Promise<void> };
-
-const isStandalone = () =>
-  matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
-const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+import { parseRestore } from "../lib/api";
+import type { Identity } from "../lib/api";
+import { isStandalone } from "../lib/install";
 
 const STEPS = [
-  ["01", "Make your card", "Who you are and what you're looking for."],
+  ["01", "Make your card", "Name, photo, what you do. 20 seconds."],
   ["02", "See who's around", "People near you, closest first."],
   ["03", "Get intros, say hi", "We point out who you should meet. Message them to find each other."],
 ];
 
-export function Welcome({ onStart }: { onStart: () => void }) {
-  const [installEvt, setInstallEvt] = useState<BIPEvent | null>(null);
-  // iOS keeps separate storage for Safari and the home-screen app,
-  // so nudge people to install before they make a card.
-  const showIOSHint = isIOS() && !isStandalone();
+export function Welcome({ onStart, onRestore }: { onStart: () => void; onRestore: (id: Identity) => void }) {
+  // In the installed app, people often already made a card in the browser.
+  const [restoring, setRestoring] = useState(isStandalone());
+  const [link, setLink] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const h = (e: Event) => {
-      e.preventDefault();
-      setInstallEvt(e as BIPEvent);
-    };
-    addEventListener("beforeinstallprompt", h);
-    return () => removeEventListener("beforeinstallprompt", h);
-  }, []);
+  async function paste() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setLink(text);
+      tryRestore(text);
+    } catch {
+      setError("Couldn't read the clipboard. Paste the link in the box.");
+    }
+  }
+
+  function tryRestore(text: string) {
+    const id = parseRestore(text);
+    if (id) onRestore(id);
+    else setError("That doesn't look like a Connect login link.");
+  }
 
   return (
     <div className="flex min-h-full flex-col bg-paper pb-safe">
@@ -62,30 +65,38 @@ export function Welcome({ onStart }: { onStart: () => void }) {
       </div>
 
       <div className="mt-auto px-5 pt-6 pb-6">
-        {showIOSHint && (
-          <div className="mb-4 border-2 border-ink bg-card p-4">
-            <div className="text-[15px] font-semibold">Add it to your Home Screen first</div>
-            <div className="mt-1 flex flex-wrap items-center gap-1 text-[14px] text-muted">
-              Tap <IconShare width={17} height={17} className="text-g-blue" /> then
-              <span className="inline-flex items-center gap-1 text-ink">
-                <IconPlusSquare width={17} height={17} /> Add to Home Screen
-              </span>
-              . Then open it from there.
+        <button onClick={onStart} className="press pop h-14 w-full border-2 border-ink bg-ink text-[17px] font-semibold text-paper">
+          Get started
+        </button>
+
+        {restoring ? (
+          <div className="mt-4 border-2 border-ink bg-card p-4">
+            <div className="text-[15px] font-semibold">Already made a card? Restore it</div>
+            <div className="mt-2 flex gap-2">
+              <input
+                value={link}
+                onChange={(e) => {
+                  setLink(e.target.value);
+                  setError(null);
+                }}
+                placeholder="Paste your login link"
+                autoCapitalize="off"
+                className="h-11 min-w-0 flex-1 border-2 border-ink bg-paper px-3 text-[15px] outline-none"
+              />
+              <button
+                onClick={() => (link ? tryRestore(link) : paste())}
+                className="h-11 shrink-0 border-2 border-ink bg-amber px-3 text-[15px] font-semibold"
+              >
+                {link ? "Restore" : "Paste"}
+              </button>
             </div>
+            {error && <p className="mt-2 text-[13px] text-g-red">{error}</p>}
           </div>
-        )}
-        {installEvt && (
-          <button
-            onClick={() => installEvt.prompt().then(() => setInstallEvt(null))}
-            className="press pop-sm mb-3 h-14 w-full border-2 border-ink bg-amber text-[17px] font-semibold"
-          >
-            Install app
+        ) : (
+          <button onClick={() => setRestoring(true)} className="mt-3 block w-full text-center text-[14px] text-muted underline underline-offset-4">
+            Already made a card? Restore it
           </button>
         )}
-        <button onClick={onStart} className="press pop h-14 w-full border-2 border-ink bg-ink text-[17px] font-semibold text-paper">
-          {showIOSHint ? "Continue in browser" : "Get started"}
-        </button>
-        <p className="mt-3 text-center text-[13px] text-muted">No sign up. Takes 30 seconds.</p>
       </div>
     </div>
   );

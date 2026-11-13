@@ -1,93 +1,112 @@
 // Matching: who should meet whom, and why.
 // Pure functions, no I/O, so they're easy to test and tweak.
-// Each rule looks at "what you are" (tags) and "what you're looking for" on both sides.
+//
+// Combines three things on both sides:
+//   tags        what you are         (Engineer, Recruiter…)
+//   lookingFor  what you want        (A job, Mentors, Cofounder…)  ← the verb
+//   skills      what you work with   (Go, Flutter, Fundraising…)   ← the noun
+//   wantsSkills skills you're after in others
+// e.g. you want Mentors + PyTorch, they know PyTorch and want Mentees
+//   → "Ada works with PyTorch and wants to mentor."
 
 import type { Band } from "./types";
 
-export type Side = { name: string; tags: string[]; lookingFor: string[] };
+export type Side = { name: string; tags: string[]; lookingFor: string[]; skills: string[]; wantsSkills: string[] };
 
-type Rule = {
-  score: number;
-  test: (me: Side, them: Side) => boolean;
-  say: (them: Side) => string;
-};
+// How special a skill is in the room right now. Rare skills count more.
+export type Rarity = (skill: string) => number;
+
+export const INTRO_MIN = 4; // score needed to show as an intro
 
 const has = (list: string[], v: string) => list.includes(v);
 const hiring = (s: Side) => has(s.lookingFor, "Hiring") || has(s.tags, "Recruiter");
 const first = (name: string) => name.trim().split(/\s+/)[0] || name;
+const lower = (l: string[]) => new Set(l.map((x) => x.toLowerCase()));
 
-// Order matters: stronger, more specific reasons first.
-const RULES: Rule[] = [
-  {
-    score: 5,
-    test: (me, t) => hiring(t) && has(me.lookingFor, "A job"),
-    say: (t) => `${first(t.name)} is hiring, and you're looking for a job.`,
-  },
-  {
-    score: 5,
-    test: (me, t) => hiring(me) && has(t.lookingFor, "A job"),
-    say: (t) => `${first(t.name)} is looking for a job, and you're hiring.`,
-  },
-  {
-    score: 5,
-    test: (me, t) => has(me.lookingFor, "Mentors") && has(t.lookingFor, "Mentees"),
-    say: (t) => `${first(t.name)} wants to mentor, and you're looking for a mentor.`,
-  },
-  {
-    score: 5,
-    test: (me, t) => has(me.lookingFor, "Mentees") && has(t.lookingFor, "Mentors"),
-    say: (t) => `${first(t.name)} is looking for a mentor, and you want to mentor.`,
-  },
-  {
-    score: 4,
-    test: (me, t) => has(me.lookingFor, "Cofounder") && has(t.lookingFor, "Cofounder"),
-    say: () => `You're both looking for a cofounder.`,
-  },
-  {
-    score: 3,
-    test: (me, t) => has(me.lookingFor, "Cofounder") && has(t.tags, "Founder"),
-    say: (t) => `${first(t.name)} is a founder, and you're looking for a cofounder.`,
-  },
-  {
-    score: 3,
-    test: (me, t) => has(me.lookingFor, "Collaborators") && has(t.lookingFor, "Collaborators"),
-    say: () => `You're both looking for people to build with.`,
-  },
-  {
-    score: 3,
-    test: (me, t) => has(me.lookingFor, "Open source") && has(t.lookingFor, "Open source"),
-    say: () => `You're both into open source.`,
-  },
-  {
-    score: 2,
-    test: (_me, t) => has(t.tags, "Speaker"),
-    say: (t) => `${first(t.name)} is speaking at DevFest. Catch them after the talk.`,
-  },
-  {
-    score: 1,
-    test: (me, t) => has(me.lookingFor, "New friends") && has(t.lookingFor, "New friends"),
-    say: () => `You're both here to make friends.`,
-  },
-];
-
-// Score one pair from "me"'s point of view. Returns up to 2 reasons.
-export function match(me: Side, them: Side, band: Band): { score: number; reasons: string[] } {
-  let score = 0;
-  const reasons: string[] = [];
-  for (const r of RULES) {
-    if (!r.test(me, them)) continue;
-    score += r.score;
-    if (reasons.length < 2) reasons.push(r.say(them));
-  }
-  const shared = me.tags.filter((t) => them.tags.includes(t) && t !== "Volunteer" && t !== "Speaker");
-  if (shared.length) {
-    score += 1;
-    if (reasons.length < 2) reasons.push(`Same world as you: ${shared[0]}.`);
-  }
-  // Only boost by distance when there's already a reason to meet.
-  if (score > 0) score += band === "close" ? 2 : band === "near" ? 1 : 0;
-  return { score, reasons };
+// Skills in `a` that also appear in `b`, rarest first.
+function overlap(a: string[], b: string[], rarity: Rarity) {
+  const set = lower(b);
+  return a.filter((s) => set.has(s.toLowerCase())).sort((x, y) => rarity(y) - rarity(x));
 }
 
-// A match strong enough to show as an intro.
-export const INTRO_MIN = 4;
+function list(skills: string[]) {
+  const s = skills.slice(0, 2);
+  return s.length === 2 ? `${s[0]} and ${s[1]}` : s[0];
+}
+
+export function match(me: Side, them: Side, band: Band, rarity: Rarity = () => 1) {
+  const n = first(them.name);
+  const hits: { score: number; say: string }[] = [];
+  const add = (score: number, say: string) => hits.push({ score, say });
+  const weight = (skills: string[]) => skills.slice(0, 3).reduce((t, s) => t + rarity(s), 0);
+
+  // Skills they have that I'm after, and skills I have that they're after.
+  const iWantTheyHave = overlap(me.wantsSkills, them.skills, rarity);
+  const theyWantIHave = overlap(them.wantsSkills, me.skills, rarity);
+  const shared = overlap(me.skills, them.skills, rarity);
+
+  // Jobs
+  if (hiring(them) && has(me.lookingFor, "A job")) {
+    if (theyWantIHave.length) add(6 + weight(theyWantIHave), `${n} is hiring for ${list(theyWantIHave)}, and you know ${theyWantIHave.length > 1 ? "both" : "it"}.`);
+    else add(5, `${n} is hiring, and you're looking for a job.`);
+  }
+  if (hiring(me) && has(them.lookingFor, "A job")) {
+    if (iWantTheyHave.length) add(6 + weight(iWantTheyHave), `${n} knows ${list(iWantTheyHave)} and is looking for a job.`);
+    else add(5, `${n} is looking for a job, and you're hiring.`);
+  }
+
+  // Mentoring
+  if (has(me.lookingFor, "Mentors") && has(them.lookingFor, "Mentees")) {
+    if (iWantTheyHave.length) add(6 + weight(iWantTheyHave), `${n} works with ${list(iWantTheyHave)} and wants to mentor.`);
+    else add(5, `${n} wants to mentor, and you're looking for a mentor.`);
+  }
+  if (has(me.lookingFor, "Mentees") && has(them.lookingFor, "Mentors")) {
+    if (theyWantIHave.length) add(6 + weight(theyWantIHave), `${n} wants a mentor in ${list(theyWantIHave)}. That's you.`);
+    else add(5, `${n} is looking for a mentor, and you want to mentor.`);
+  }
+
+  // Cofounders
+  if (has(me.lookingFor, "Cofounder") && (has(them.lookingFor, "Cofounder") || has(them.tags, "Founder"))) {
+    if (iWantTheyHave.length) add(5 + weight(iWantTheyHave), `${n} knows ${list(iWantTheyHave)} and is open to cofounding.`);
+    else if (has(them.lookingFor, "Cofounder")) add(4, `You're both looking for a cofounder.`);
+    else add(3, `${n} is a founder, and you're looking for a cofounder.`);
+  }
+
+  // Building together
+  const builder = (s: Side) => has(s.lookingFor, "Collaborators") || has(s.lookingFor, "Open source");
+  if (builder(me) && builder(them)) {
+    if (shared.length) add(3 + weight(shared), `You both build with ${list(shared)} and want collaborators.`);
+    else add(3, `You're both looking for people to build with.`);
+  }
+
+  // Plain skill needs, when no goal above already used them
+  const said = hits.map((h) => h.say).join(" ");
+  if (iWantTheyHave.length && !said.includes(iWantTheyHave[0])) {
+    add(2 * weight(iWantTheyHave), `${n} works with ${list(iWantTheyHave)}, which you're looking for.`);
+  }
+  if (theyWantIHave.length && !said.includes(theyWantIHave[0])) {
+    add(2 * weight(theyWantIHave), `${n} is looking for someone who knows ${list(theyWantIHave)}. That's you.`);
+  }
+
+  // Lighter signals
+  if (has(them.tags, "Speaker")) add(2, `${n} is speaking at DevFest. Catch them after the talk.`);
+  if (shared.length && !hits.some((h) => h.say.includes(shared[0]))) add(weight(shared.slice(0, 1)), `You both work with ${shared[0]}.`);
+  if (has(me.lookingFor, "New friends") && has(them.lookingFor, "New friends")) add(1, `You're both here to make friends.`);
+
+  hits.sort((a, b) => b.score - a.score);
+  let score = hits.reduce((t, h) => t + h.score, 0);
+  // Only boost by distance when there's already a reason to meet.
+  if (score > 0) score += band === "close" ? 2 : band === "near" ? 1 : 0;
+  return { score: Math.round(score * 10) / 10, reasons: hits.slice(0, 2).map((h) => h.say) };
+}
+
+// Rarity from how many people present list a skill: 1 (everyone has it) to 3 (only one other person).
+export function rarityFrom(people: { skills: string[] }[]): Rarity {
+  const counts = new Map<string, number>();
+  for (const p of people) for (const s of p.skills) counts.set(s.toLowerCase(), (counts.get(s.toLowerCase()) ?? 0) + 1);
+  const total = Math.max(people.length, 1);
+  return (skill) => {
+    const c = counts.get(skill.toLowerCase()) ?? 1;
+    return Math.min(3, Math.max(1, 1 + Math.log2(total / c) / 2));
+  };
+}
