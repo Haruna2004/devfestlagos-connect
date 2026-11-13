@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { EVENT } from "../../shared/event";
 import type { Band, MyProfile, NearbyPerson } from "../../shared/types";
 import { Avatar } from "../components/Avatar";
 import { TopBar } from "../components/Brand";
 import { Radar } from "../components/Radar";
 import { ago, km } from "../components/format";
-import { IconChevron, IconEyeOff, IconPin, IconShare, IconSpark } from "../components/icons";
+import { IconChevron, IconClose, IconEyeOff, IconPin, IconShare, IconSpark } from "../components/icons";
+import { useHiddenIntros } from "../lib/hiddenIntros";
 import type { useNearby } from "../lib/useNearby";
 import { missing, NEXT_LABEL, STEPS } from "../lib/strength";
 
@@ -37,7 +38,12 @@ export function Nearby({
 
   const people = result?.people ?? [];
   const introIds = useMemo(() => new Set(result?.intros ?? []), [result]);
-  const intros = (result?.intros ?? []).map((id) => people.find((p) => p.id === id)!).filter(Boolean);
+  const { hidden, hide } = useHiddenIntros();
+  // Said hi or dismissed? Drop them from "You should meet" (they stay in the list below).
+  const intros = (result?.intros ?? [])
+    .filter((id) => !hidden.has(id))
+    .map((id) => people.find((p) => p.id === id)!)
+    .filter(Boolean);
 
   // Search across name, role, company, tags and skills, e.g. "flutter" or "recruiter".
   const query = q.trim().toLowerCase();
@@ -93,18 +99,31 @@ export function Nearby({
           <>
             {todo.length > 0 && <StrengthCard doneCount={STEPS.length - todo.length} next={NEXT_LABEL[todo[0]]} onClick={onBoost} />}
 
+            <AnimatePresence initial={false}>
             {intros.length > 0 && (
-              <section className="mb-6">
+              <motion.section key="intros" exit={{ opacity: 0, height: 0 }} className="mb-6 overflow-hidden">
                 <h2 className="flex items-center gap-2 px-5 pb-3 font-display text-[24px] leading-none">
                   <IconSpark width={18} height={18} className="text-amber" /> You should meet
                 </h2>
                 <div className="no-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-5 pb-2">
-                  {intros.map((p) => (
-                    <IntroCard key={p.id} p={p} onOpen={() => onPick(p)} onMessage={() => onMessage(p)} />
-                  ))}
+                  <AnimatePresence initial={false}>
+                    {intros.map((p) => (
+                      <IntroCard
+                        key={p.id}
+                        p={p}
+                        onOpen={() => onPick(p)}
+                        onMessage={() => {
+                          hide(p.id);
+                          onMessage(p);
+                        }}
+                        onDismiss={() => hide(p.id)}
+                      />
+                    ))}
+                  </AnimatePresence>
                 </div>
-              </section>
+              </motion.section>
             )}
+            </AnimatePresence>
 
             {people.length > 3 && (
               <div className="flex gap-2 px-5">
@@ -161,10 +180,32 @@ export function Nearby({
   );
 }
 
-function IntroCard({ p, onOpen, onMessage }: { p: NearbyPerson; onOpen: () => void; onMessage: () => void }) {
+function IntroCard({
+  p,
+  onOpen,
+  onMessage,
+  onDismiss,
+}: {
+  p: NearbyPerson;
+  onOpen: () => void;
+  onMessage: () => void;
+  onDismiss: () => void;
+}) {
   return (
-    <div className="pop flex w-[280px] shrink-0 snap-start flex-col border-2 border-ink bg-amber p-4">
-      <button onClick={onOpen} className="flex items-center gap-3 text-left">
+    <motion.div
+      layout
+      exit={{ opacity: 0, scale: 0.9, width: 0, marginRight: -12 }}
+      transition={{ duration: 0.2 }}
+      className="pop relative flex w-[280px] shrink-0 snap-start flex-col border-2 border-ink bg-amber p-4"
+    >
+      <button
+        onClick={onDismiss}
+        className="absolute top-1.5 right-1.5 grid size-9 place-items-center text-ink/70 active:text-ink"
+        aria-label={`Dismiss ${p.name}`}
+      >
+        <IconClose width={18} height={18} />
+      </button>
+      <button onClick={onOpen} className="flex items-center gap-3 pr-6 text-left">
         <Avatar name={p.name} photo={p.photo} seed={p.id} size={52} />
         <div className="min-w-0">
           <div className="truncate text-[17px] font-semibold">{p.name}</div>
@@ -177,7 +218,7 @@ function IntroCard({ p, onOpen, onMessage }: { p: NearbyPerson; onOpen: () => vo
       <button onClick={onMessage} className="press mt-3 h-10 border-2 border-ink bg-ink text-[15px] font-semibold text-paper">
         Say hi
       </button>
-    </div>
+    </motion.div>
   );
 }
 

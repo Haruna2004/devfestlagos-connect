@@ -19,6 +19,7 @@ import { Welcome } from "./screens/Welcome";
 import { Boost } from "./screens/Boost";
 import { InstallSheet } from "./components/InstallSheet";
 import { alreadyAsked, canInstall, markAsked } from "./lib/install";
+import { loadHidden } from "./lib/hiddenIntros";
 
 const CACHE = "connect.me";
 const SEEN_INTROS = "connect.introsSeen";
@@ -153,7 +154,7 @@ function Main({
   useEffect(() => {
     const r = nearby.result;
     if (!r?.intros.length || Date.now() - lastToast.current < TOAST_GAP_MS) return;
-    const seen = new Set(load<string[]>(SEEN_INTROS, []));
+    const seen = new Set([...load<string[]>(SEEN_INTROS, []), ...loadHidden()]);
     const fresh = r.intros
       .map((id) => r.people.find((p) => p.id === id))
       .find((p) => p && p.band !== "venue" && !seen.has(p.id));
