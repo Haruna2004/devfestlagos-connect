@@ -3,7 +3,8 @@ import type { FormEvent } from "react";
 import { LIMITS } from "../../shared/types";
 import type { Message, PersonLite } from "../../shared/types";
 import { Avatar } from "../components/Avatar";
-import { IconBack, IconBlock, IconSend } from "../components/icons";
+import { IconBack, IconBlock, IconSend, IconSpark } from "../components/icons";
+import { LightUp } from "../components/LightUp";
 import { api } from "../lib/api";
 import type { Identity } from "../lib/api";
 import { time } from "./Messages";
@@ -15,11 +16,13 @@ const QUICK = ["Hey! Saw you on Connect 👋", "Where are you right now?", "I'm 
 // Full-screen text chat. Polls for new messages while open.
 export function Chat({
   identity,
+  myName,
   person,
   onBack,
   onOpenProfile,
 }: {
   identity: Identity;
+  myName: string;
   person: PersonLite;
   onBack: () => void;
   onOpenProfile?: () => void;
@@ -30,6 +33,7 @@ export function Chat({
   const [gone, setGone] = useState(false);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [lit, setLit] = useState(false);
   const lastId = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -111,8 +115,13 @@ export function Chat({
               )}
             </div>
           </button>
-          <button onClick={toggleBlock} className="flex items-center gap-1 p-2 text-[13px] text-paper/70" aria-label={blocked ? "Unblock" : "Block"}>
-            <IconBlock width={18} height={18} /> {blocked ? "Unblock" : "Block"}
+          {!blocked && !gone && (
+            <button onClick={() => setLit(true)} className="flex items-center gap-1 bg-amber px-2.5 py-1.5 text-[13px] font-semibold text-ink" aria-label="Light up">
+              <IconSpark width={14} height={14} /> Light up
+            </button>
+          )}
+          <button onClick={toggleBlock} className="p-2 text-paper/70" aria-label={blocked ? "Unblock" : "Block"}>
+            <IconBlock width={20} height={20} />
           </button>
         </div>
       </header>
@@ -188,6 +197,7 @@ export function Chat({
           {gone ? "This person deleted their card." : "You blocked this person."}
         </div>
       )}
+      {lit && <LightUp identity={identity} myName={myName} other={person} onClose={() => setLit(false)} />}
     </div>
   );
 }

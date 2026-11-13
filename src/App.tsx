@@ -5,6 +5,7 @@ import type { MyProfile, NearbyPerson, PersonLite } from "../shared/types";
 import { Avatar } from "./components/Avatar";
 import { IconChat, IconRadar, IconSpark, IconUser } from "./components/icons";
 import { PersonSheet } from "./components/PersonSheet";
+import { where } from "./components/format";
 import { api, ApiError, getIdentity, readRestoreHash, setIdentity } from "./lib/api";
 import type { Identity } from "./lib/api";
 import { useNearby } from "./lib/useNearby";
@@ -155,9 +156,8 @@ function Main({
     const r = nearby.result;
     if (!r?.intros.length || Date.now() - lastToast.current < TOAST_GAP_MS) return;
     const seen = new Set([...load<string[]>(SEEN_INTROS, []), ...loadHidden()]);
-    const fresh = r.intros
-      .map((id) => r.people.find((p) => p.id === id))
-      .find((p) => p && p.band !== "venue" && !seen.has(p.id));
+    // Only pop up for matches you could walk over to now.
+    const fresh = r.intros.find((p) => (p.band === "steps" || p.band === "near") && !seen.has(p.id));
     if (!fresh) return;
     seen.add(fresh.id);
     save(SEEN_INTROS, [...seen]);
@@ -199,6 +199,7 @@ function Main({
           {tab === "nearby" ? (
             <Nearby
               me={me}
+              identity={identity}
               nearby={nearby}
               onPick={setPicked}
               onMessage={openChat}
@@ -245,7 +246,7 @@ function Main({
         </div>
       </nav>
 
-      <PersonSheet person={picked} onClose={() => setPicked(null)} onMessage={openChat} />
+      <PersonSheet person={picked} identity={identity} myName={me.name} onClose={() => setPicked(null)} onMessage={openChat} />
 
       <AnimatePresence>
         {toast && (
@@ -263,7 +264,7 @@ function Main({
             <Avatar name={toast.name} photo={toast.photo} seed={toast.id} size={46} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1 text-[12px] font-semibold tracking-wide uppercase">
-                <IconSpark width={12} height={12} /> Intro · ~{toast.distance}m away
+                <IconSpark width={12} height={12} /> Intro · {where(toast)}
               </div>
               <div className="text-[15px] leading-snug">
                 Meet <b>{toast.name}</b>. {toast.reasons[0]}
@@ -284,6 +285,7 @@ function Main({
           >
             <Chat
               identity={identity}
+              myName={me.name}
               person={chatWith}
               onBack={() => {
                 setChatWith(null);

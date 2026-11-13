@@ -1,120 +1,25 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { INTRO_MIN, match, rarityFrom } from "../shared/match";
 import { cleanSkills, SKILL_LIMITS } from "../shared/skills";
 import { LIMITS, LOOKING_FOR, ROLE_TAGS } from "../shared/types";
-import type {
-  Band,
-  Conversation,
-  Links,
-  Message,
-  MyProfile,
-  NearbyPerson,
-  PersonLite,
-  PingResult,
-  Profile,
-  ProfileInput,
-  Thread,
-} from "../shared/types";
+import type { Conversation, Links, Message, PersonLite, ProfileInput, Thread } from "../shared/types";
+import { now, room, sha256, toMine, toProfile } from "./common";
+import type { Env, Row } from "./common";
 
-type Env = {
-  DB: D1Database;
-  PHOTOS: R2Bucket;
-  VENUE_LAT: string;
-  VENUE_LNG: string;
-  VENUE_RADIUS_M: string;
-};
-
-type Row = {
-  id: string;
-  secret_hash: string;
-  name: string;
-  title: string;
-  company: string;
-  bio: string;
-  find_me: string;
-  tags: string;
-  looking_for: string;
-  skills: string;
-  wants_skills: string;
-  links: string;
-  photo: string | null;
-  visible: number;
-  lat: number | null;
-  lng: number | null;
-  accuracy: number | null;
-  seen_at: number | null;
-};
+export { EventRoom } from "./room";
 
 type Ctx = Context<{ Bindings: Env; Variables: { me: Row } }>;
 
-const STALE_MS = 10 * 60 * 1000; // hide people not seen for 10 min
-const SNAPSHOT_MS = 8000; // share one DB read across pings
 const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
 
 const app = new Hono<{ Bindings: Env; Variables: { me: Row } }>();
 
 // ---------- helpers ----------
 
-const now = () => Date.now();
-
 function randomId(bytes: number) {
   const a = crypto.getRandomValues(new Uint8Array(bytes));
-  return Array.from(a, (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(
-    "",
-  );
+  return Array.from(a, (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
 }
-
-async function sha256(s: string) {
-  const buf = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(s),
-  );
-  return Array.from(new Uint8Array(buf), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-function metres(lat1: number, lng1: number, lat2: number, lng2: number) {
-  const R = 6371000;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-function parse<T>(s: string, fallback: T): T {
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function toProfile(r: Row): Profile {
-  return {
-    id: r.id,
-    name: r.name,
-    title: r.title,
-    company: r.company,
-    bio: r.bio,
-    findMe: r.find_me,
-    tags: parse(r.tags, []),
-    lookingFor: parse(r.looking_for, []),
-    skills: parse(r.skills, []),
-    wantsSkills: parse(r.wants_skills, []),
-    links: parse(r.links, {}),
-    photo: r.photo ? `/photos/${r.photo}` : null,
-  };
-}
-
-const toMine = (r: Row): MyProfile => ({
-  ...toProfile(r),
-  visible: r.visible === 1,
-});
 
 const clip = (v: unknown, max: number) =>
   typeof v === "string" ? v.trim().slice(0, max) : undefined;
@@ -225,7 +130,7 @@ app.patch("/api/me", auth, async (c) => {
     )
       .bind(...Object.values(cols), me.id)
       .run();
-    snapshot = null;
+    await room(c.env).forget(me.id);
   }
   const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
     .bind(me.id)
@@ -241,7 +146,7 @@ app.delete("/api/me", auth, async (c) => {
     c.env.DB.prepare("DELETE FROM messages WHERE from_id = ?1 OR to_id = ?1").bind(me.id),
     c.env.DB.prepare("DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1").bind(me.id),
   ]);
-  snapshot = null;
+  await room(c.env).remove(me.id);
   return c.json({ ok: true });
 });
 
@@ -261,7 +166,7 @@ app.put("/api/me/photo", auth, async (c) => {
     .bind(key, now(), me.id)
     .run();
   if (me.photo) await c.env.PHOTOS.delete(me.photo);
-  snapshot = null;
+  await room(c.env).forget(me.id);
   return c.json({ photo: `/photos/${key}` });
 });
 
@@ -273,107 +178,20 @@ app.get("/api/users/:id", async (c) => {
   return c.json(toProfile(row));
 });
 
-// Everyone visible and recently seen. Cached briefly in the isolate so
-// hundreds of pings per minute share one query.
-type Snap = { at: number; rows: Row[] };
-let snapshot: Snap | null = null;
+// ---------- live presence (handled by the event room, see room.ts) ----------
 
-async function getSnapshot(env: Env) {
-  if (snapshot && now() - snapshot.at < SNAPSHOT_MS) return snapshot.rows;
-  const { results } = await env.DB.prepare(
-    "SELECT * FROM users WHERE visible = 1 AND seen_at > ? AND lat IS NOT NULL",
-  )
-    .bind(now() - STALE_MS)
-    .all<Row>();
-  snapshot = { at: now(), rows: results };
-  return results;
-}
+const token = (c: Ctx) => c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
 
-function band(d: number): Band {
-  if (d <= 30) return "close";
-  if (d <= 100) return "near";
-  return "venue";
-}
+app.post("/api/me/ping", async (c) => {
+  const body = await c.req.json<{ lat: number; lng: number; accuracy: number }>().catch(() => null);
+  if (!body) return c.json({ error: "bad location" }, 400);
+  const res = await room(c.env).ping(token(c), body.lat, body.lng, body.accuracy);
+  return "error" in res ? c.json({ error: res.error }, res.status) : c.json(res);
+});
 
-app.post("/api/me/ping", auth, async (c) => {
-  const me = c.get("me");
-  const body = await c.req
-    .json<{ lat: number; lng: number; accuracy: number }>()
-    .catch(() => null);
-  if (!body || !Number.isFinite(body.lat) || !Number.isFinite(body.lng))
-    return c.json({ error: "bad location" }, 400);
-  const { lat, lng } = body;
-  const accuracy = Number.isFinite(body.accuracy)
-    ? Math.min(body.accuracy, 5000)
-    : 100;
-
-  const vLat = Number(c.env.VENUE_LAT);
-  const vLng = Number(c.env.VENUE_LNG);
-  const radius = Number(c.env.VENUE_RADIUS_M) || 0;
-  const venueDistance = Math.round(metres(lat, lng, vLat, vLng));
-  // Give a bad GPS fix some benefit of the doubt, up to 200m.
-  const atVenue =
-    radius === 0 || venueDistance <= radius + Math.min(accuracy, 200);
-
-  // Only store location while at the venue. Outside, clear it.
-  await c.env.DB.prepare(
-    "UPDATE users SET lat = ?, lng = ?, accuracy = ?, seen_at = ? WHERE id = ?",
-  )
-    .bind(
-      atVenue ? lat : null,
-      atVenue ? lng : null,
-      atVenue ? accuracy : null,
-      now(),
-      me.id,
-    )
-    .run();
-
-  const unread = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM messages WHERE to_id = ? AND read_at IS NULL",
-  )
-    .bind(me.id)
-    .first<number>("n");
-
-  const result: PingResult = { atVenue, venueDistance, people: [], intros: [], unread: unread ?? 0 };
-  if (!atVenue) return c.json(result);
-
-  const blocked = await blockedSet(c.env, me.id);
-  const mine = toProfile(me);
-  const t = now();
-  const people: NearbyPerson[] = [];
-  const snap = await getSnapshot(c.env);
-  const rarity = rarityFrom(snap.map((r) => ({ skills: parse<string[]>(r.skills, []) })));
-  for (const r of snap) {
-    if (r.id === me.id || r.lat == null || r.lng == null || blocked.has(r.id)) continue;
-    const d = metres(lat, lng, r.lat, r.lng);
-    const p = toProfile(r);
-    const b = band(d);
-    const m = match(mine, p, b, rarity);
-    people.push({
-      id: p.id,
-      name: p.name,
-      title: p.title,
-      company: p.company,
-      photo: p.photo,
-      findMe: p.findMe,
-      tags: p.tags,
-      lookingFor: p.lookingFor,
-      skills: p.skills,
-      distance: Math.max(5, Math.round(d / 5) * 5),
-      band: b,
-      seenAgo: Math.max(0, Math.round((t - (r.seen_at ?? t)) / 1000)),
-      match: m.score,
-      reasons: m.reasons,
-    });
-  }
-  people.sort((a, b) => a.distance - b.distance);
-  result.people = people.slice(0, 200);
-  result.intros = result.people
-    .filter((p) => p.match >= INTRO_MIN)
-    .sort((a, b) => b.match - a.match || a.distance - b.distance)
-    .slice(0, 5)
-    .map((p) => p.id);
-  return c.json(result);
+app.get("/api/me/search", async (c) => {
+  const res = await room(c.env).search(token(c), c.req.query("q") ?? "");
+  return "error" in res ? c.json({ error: res.error }, res.status) : c.json(res);
 });
 
 // ---------- messages ----------
@@ -459,6 +277,10 @@ app.get("/api/me/messages/:other", auth, async (c) => {
     await c.env.DB.prepare("UPDATE messages SET read_at = ? WHERE to_id = ? AND from_id = ? AND read_at IS NULL")
       .bind(now(), me.id, other)
       .run();
+    const left = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE to_id = ? AND read_at IS NULL")
+      .bind(me.id)
+      .first<number>("n");
+    await room(c.env).setUnread(me.id, left ?? 0);
   }
   const convo: Conversation = {
     person: user ? toLite(user) : null,
@@ -493,22 +315,26 @@ app.post("/api/me/messages/:other", auth, async (c) => {
   )
     .bind(me.id, other, body, t)
     .first<MsgRow>();
+  await room(c.env).bumpUnread(other);
   return c.json(toMessage(row!));
 });
 
 app.put("/api/me/blocks/:other", auth, async (c) => {
   const me = c.get("me");
+  const other = c.req.param("other") ?? "";
   await c.env.DB.prepare("INSERT OR IGNORE INTO blocks (blocker, blocked, created_at) VALUES (?, ?, ?)")
-    .bind(me.id, c.req.param("other"), now())
+    .bind(me.id, other, now())
     .run();
+  // Blocks hide both people from each other: reload both in the room.
+  await Promise.all([room(c.env).forget(me.id), room(c.env).forget(other)]);
   return c.json({ ok: true });
 });
 
 app.delete("/api/me/blocks/:other", auth, async (c) => {
   const me = c.get("me");
-  await c.env.DB.prepare("DELETE FROM blocks WHERE blocker = ? AND blocked = ?")
-    .bind(me.id, c.req.param("other"))
-    .run();
+  const other = c.req.param("other") ?? "";
+  await c.env.DB.prepare("DELETE FROM blocks WHERE blocker = ? AND blocked = ?").bind(me.id, other).run();
+  await Promise.all([room(c.env).forget(me.id), room(c.env).forget(other)]);
   return c.json({ ok: true });
 });
 

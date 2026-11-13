@@ -25,9 +25,13 @@ A PWA for people physically at DevFest Lagos (Landmark Event Centre, Oniru, Lago
 - **GPS only.** Browser geolocation, 15–50m indoors. No QR zones (too many places to put them), no Bluetooth (no Web Bluetooth on iOS). Precision gap is closed by design: clear photo, free-text "find me" note, and messages.
 - **Ultrasonic proximity** was explored as research in a separate project. Not part of this app unless it's proven on real phones.
 - **No login.** First open creates a public `id` + private `secret` (localStorage). Server stores only SHA-256 of the secret. A "login link" (`/#k=<id>.<secret>`) moves the card to another phone or into the installed app.
-- **Privacy.** Never send anyone's coordinates to another client, only rounded distance (5m steps, min 5m). Location is stored only while inside the venue radius; outside it's nulled. People drop off lists 10 min after their last ping. Never log message contents.
+- **Privacy.** Never send anyone's coordinates to another client. Never store locations in D1. Live positions live in the event room (below); outside the venue radius you're dropped. People drop off lists 10 min after their last ping. Never log message contents.
+- **Event room (Durable Object `EventRoom`, `worker/room.ts`).** One room per event (`idFromName("event")`, `locationHint: "afr"`). Pings go Worker → room: zero D1 writes per ping. The room caches profiles/blocks/unread from D1 and the API calls `forget`/`remove`/`setUnread`/`bumpUnread` when those change. Cloudflare evicts idle DOs within seconds (memory wiped), so the room also copies positions to its own SQLite storage, throttled to once a minute per person or after a 10m move, and reloads them on start. Deleted on leave/stale.
+- **Payload.** Each ping returns your nearest 30 (`people`), a count of the rest (`more`), up to 5 intros from the whole venue (`intros`, full objects), and `unread`. Search (`GET /api/me/search?q=`) runs in the room over everyone present.
+- **Distance UX (`shared/presence.ts`, `src/components/format.ts`).** No fake-precise metres. Bands in words: `steps` "A few steps away" (≤20m and combined GPS uncertainty ≤30m), `near` "Nearby" (≤60m), `walk` "Short walk · ~N min" (≤150m, 80m/min), `venue` "Elsewhere at the venue". Positions are smoothed over the last 3 fixes (90s), weighted by accuracy. Hysteresis: a person only changes band once 8m past the line. Profile sheet shows an honest range ("about 20–50m away") + freshness ("here now" / "seen N min ago"); people not heard from in 2 min fade. Rows lead with the "find me" note; distance is a small grey hint. GPS chip says Good/Rough/Weak; weak shows a tip. Radar rings are labelled steps/nearby/walk; venue-band people aren't drawn.
+- **Light up (`src/components/LightUp.tsx`).** For the last few metres: full-screen colour + your first name, wake lock on. Both phones pick the same colour from the sorted pair of ids, no server needed. Button sends "I'm holding up a <colour> screen…" to the other person. Offered in the sheet (steps/near) and in chat.
 - **Venue gate.** `VENUE_RADIUS_M` in `wrangler.jsonc`. Currently `"0"` (works anywhere, for demos/testing). Set `"250"` to lock to Landmark. Server adds up to 200m slack for bad GPS.
-- **Polling, not WebSockets.** Ping every 20s while the app is open and visible. Chat polls every 4s while open. Inbox every 8s while open. No push notifications (yet).
+- **Polling, not WebSockets (yet).** Ping every 20s while the app is open and visible. The event room makes WebSockets with hibernation the natural next step. Chat polls every 4s while open. Inbox every 8s while open. No push notifications (yet).
 - **Matching** combines four things per person: `tags` (what you are), `lookingFor` (goal, the verb), `skills` (what you work with), `wantsSkills` (skills you're after, the noun). Goal + skill makes specific reasons ("Chioma is hiring for Kubernetes and Go, and you know both"). Rare skills in the room weigh more. Score ≥ 4 = intro. Reasons are always written to the viewer, use first names, never he/she.
 - **Light onboarding.** Creating a card asks only photo, name and "I am". Everything else comes later through a one-question-per-screen "Get better intros" flow (skills → goals + follow-up "Hiring for which skills?" → find me → about), opened from a single progress card on Nearby. Every step is skippable.
 - **Install prompt** never on the landing page. Shown once after a first good moment (an intro pop-up or leaving a chat). On iOS it copies the login link first because the installed app doesn't share Safari's storage; the installed app's welcome screen offers "Restore my card".
@@ -53,17 +57,20 @@ shared/event.ts    event name, venue name, ROLE_TAGS, LOOKING_FOR
 shared/skills.ts   skill catalog, role → suggestions, normalize/search
 shared/match.ts    matching rules + rarity (pure functions)
 shared/types.ts    types shared by app and Worker
-worker/index.ts    whole API (Hono): auth, profile, photo, ping, threads, messages, blocks
+shared/presence.ts distance bands, smoothing, hysteresis, ranges (pure)
+worker/index.ts    API (Hono): auth, profile, photo, threads, messages, blocks; forwards ping/search to the room
+worker/room.ts     EventRoom Durable Object: live presence, nearest-30, intros, search
+worker/common.ts   Env, Row, profile mapping, room() helper
 migrations/        D1 schema. Add a new numbered file, never edit old ones
 src/App.tsx        app shell: tabs, chat/boost/edit overlays, intro pop-up, install sheet
 src/screens/       Welcome, ProfileForm (create = basics, edit = full), Boost, Nearby, Messages, Chat, Me, PublicProfile
-src/components/    Brand(TopBar), Avatar, Chips, SkillPicker, Radar, PersonSheet, InstallSheet, icons
+src/components/    Brand(TopBar), Avatar, Chips, SkillPicker, Radar, PersonSheet, InstallSheet, LightUp, format, icons
 src/lib/           api, useNearby (GPS + ping loop), strength (boost steps), hiddenIntros, install, image
 ```
 
 API (all under `/api`, auth = `Authorization: Bearer <id>.<secret>`): `POST /me` (create), `GET|PATCH|DELETE /me`, `PUT /me/photo`, `POST /me/ping` → `{atVenue, venueDistance, people, intros, unread}`, `GET /me/threads`, `GET|POST /me/messages/:other`, `PUT|DELETE /me/blocks/:other`, public `GET /users/:id`, photos at `/photos/*` from R2.
 
-The ping reads everyone from an in-memory snapshot cached 8s per Worker isolate (one D1 query shared by many pings). New people can take up to 8s to appear.
+`POST /me/ping` and `GET /me/search` are forwarded to the event room. Everything else hits D1 directly.
 
 ## Commands
 
@@ -84,7 +91,7 @@ Resources: Worker `devfestlagos-connect`, D1 `devfestlagos-connect` (id in `wran
 ## How to verify a change
 
 1. `npm run typecheck` (also runs in CI on every push/PR).
-2. API: run `npm run dev` and hit endpoints with curl. Create two cards, `PATCH` their tags/skills, ping both near `6.42312, 3.44535`, wait 9s (snapshot cache), ping again and check `people`/`reasons`/`intros`. Clean up with `DELETE /api/me`.
+2. API: run `npm run dev` and hit endpoints with curl. Create two cards, `PATCH` their tags/skills, ping both near `6.42312, 3.44535`, then ping again and check `people`/`more`/`intros`/`reasons`. Also test after 25s idle (room eviction) that people are still there. Clean up with `DELETE /api/me`.
 3. UI: headless Chrome via `puppeteer-core` at 393×852, `isMobile`, geolocation permission + `setGeolocation`. Seed people through the API first. Look at the screenshots before claiming a UI change works.
    - Selector gotcha: Nearby has an input whose placeholder also starts with "Search skills". Use exact placeholders.
 4. After deploy, smoke test the live domain with curl (create → ping → delete).
@@ -101,5 +108,5 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - No push notifications; messages arrive only while the app is open.
 - No report flow yet (block exists).
 - D1 is in Western Europe (~100ms extra from Lagos). Fine for 20s polling.
-- Busy event = lots of D1 writes (one per ping). Needs Workers Paid ($5/mo) for a few hundred people.
-- Possible next: push via Web Push, event code check, report button, "met" history/notes, admin view for organisers.
+- Every ping is a Worker request + a room request. The free plan caps Workers at 100k requests/day (~35 min for 1,000 people), so a busy event needs Workers Paid ($5/mo). D1 is no longer hit per ping.
+- Possible next: WebSockets via the room (instant arrivals + messages), push via Web Push, event code check, report button, "met" history/notes, admin view for organisers. Port these room/distance changes to moonshot-connect once approved.

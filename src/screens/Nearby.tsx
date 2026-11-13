@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { EVENT } from "../../shared/event";
@@ -6,27 +6,26 @@ import type { Band, MyProfile, NearbyPerson } from "../../shared/types";
 import { Avatar } from "../components/Avatar";
 import { TopBar } from "../components/Brand";
 import { Radar } from "../components/Radar";
-import { ago, km } from "../components/format";
+import { BAND_TITLE, freshness, gpsQuality, km, STALE_S, where } from "../components/format";
 import { IconChevron, IconClose, IconEyeOff, IconPin, IconShare, IconSpark } from "../components/icons";
+import { api } from "../lib/api";
+import type { Identity } from "../lib/api";
 import { useHiddenIntros } from "../lib/hiddenIntros";
-import type { useNearby } from "../lib/useNearby";
 import { missing, NEXT_LABEL, STEPS } from "../lib/strength";
+import type { useNearby } from "../lib/useNearby";
 
-const SECTIONS: { band: Band; title: string; hint: string }[] = [
-  { band: "close", title: "Right around you", hint: "within ~30m" },
-  { band: "near", title: "Nearby", hint: "within ~100m" },
-  { band: "venue", title: "Around the venue", hint: "further out" },
-];
-
+const BANDS: Band[] = ["steps", "near", "walk", "venue"];
 
 export function Nearby({
   me,
+  identity,
   nearby,
   onPick,
   onMessage,
   onBoost,
 }: {
   me: MyProfile;
+  identity: Identity;
   nearby: ReturnType<typeof useNearby>;
   onPick: (p: NearbyPerson) => void;
   onMessage: (p: NearbyPerson) => void;
@@ -35,54 +34,75 @@ export function Nearby({
   const { geo, start, result, accuracy, error } = nearby;
   const [onlyMatches, setOnlyMatches] = useState(false);
   const [q, setQ] = useState("");
+  const [found, setFound] = useState<NearbyPerson[] | null>(null);
 
   const people = result?.people ?? [];
-  const introIds = useMemo(() => new Set(result?.intros ?? []), [result]);
   const { hidden, hide } = useHiddenIntros();
+  const introIds = useMemo(() => new Set((result?.intros ?? []).map((p) => p.id)), [result]);
   // Said hi or dismissed? Drop them from "You should meet" (they stay in the list below).
-  const intros = (result?.intros ?? [])
-    .filter((id) => !hidden.has(id))
-    .map((id) => people.find((p) => p.id === id)!)
-    .filter(Boolean);
+  const intros = (result?.intros ?? []).filter((p) => !hidden.has(p.id));
 
-  // Search across name, role, company, tags and skills, e.g. "flutter" or "recruiter".
-  const query = q.trim().toLowerCase();
-  const list = people.filter(
-    (p) =>
-      (!onlyMatches || p.match > 0) &&
-      (!query || [p.name, p.title, p.company, ...p.tags, ...p.skills].some((f) => f.toLowerCase().includes(query))),
-  );
+  // Search runs in the event room across everyone, not just your nearest 30.
+  const query = q.trim();
+  useEffect(() => {
+    if (!query) return setFound(null);
+    let live = true;
+    const t = setTimeout(() => {
+      api
+        .search(identity, query)
+        .then((r) => live && setFound(r))
+        .catch(() => {});
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [query, identity]);
+
+  const base = query && found ? found : people;
+  const list = onlyMatches ? base.filter((p) => p.match > 0) : base;
 
   const ready = geo === "on" && result?.atVenue;
+  const total = people.length + (result?.more ?? 0);
   const todo = missing(me);
+  const gps = accuracy != null ? gpsQuality(accuracy) : null;
 
   return (
     <div className="min-h-full pb-28">
       <header className="bg-ink pt-safe text-paper">
         <TopBar
           right={
-            geo === "on" &&
-            accuracy != null && <span className="border border-paper/30 px-2 py-0.5 text-[12px] text-paper/80">GPS ±{accuracy}m</span>
+            gps && (
+              <span className="flex items-center gap-1.5 border border-paper/30 px-2 py-0.5 text-[12px] text-paper/85">
+                <span className={`size-2 ${gps.tone === "good" ? "bg-g-green" : gps.tone === "rough" ? "bg-amber" : "bg-g-red"}`} />
+                GPS {gps.label}
+              </span>
+            )
           }
         />
         <h1 className="px-5 pt-3 pb-5 font-display text-[34px] leading-[1.02]">
           {!ready ? (
             "Who's around?"
-          ) : people.length === 0 ? (
+          ) : total === 0 ? (
             "Just you so far"
           ) : (
             <>
-              <span className="text-amber">{people.length}</span> {people.length === 1 ? "person" : "people"} around you
+              <span className="text-amber">{total}</span> {total === 1 ? "person" : "people"} here
             </>
           )}
         </h1>
-        <Radar people={ready ? list : []} intros={introIds} onPick={onPick} />
+        <Radar people={ready ? people : []} intros={introIds} onPick={onPick} />
       </header>
 
       <div className="border-t-2 border-ink pt-5">
         {!me.visible && (
           <Banner tone="ink" icon={<IconEyeOff width={20} height={20} />}>
             You're hidden. Others can't see you. Turn it off in Me.
+          </Banner>
+        )}
+        {ready && gps?.tone === "weak" && (
+          <Banner tone="ink" icon={<IconPin width={20} height={20} />}>
+            Weak GPS signal. Distances will be rough. Step near a door or window for a better one.
           </Banner>
         )}
 
@@ -100,37 +120,37 @@ export function Nearby({
             {todo.length > 0 && <StrengthCard doneCount={STEPS.length - todo.length} next={NEXT_LABEL[todo[0]]} onClick={onBoost} />}
 
             <AnimatePresence initial={false}>
-            {intros.length > 0 && (
-              <motion.section key="intros" exit={{ opacity: 0, height: 0 }} className="mb-6 overflow-hidden">
-                <h2 className="flex items-center gap-2 px-5 pb-3 font-display text-[24px] leading-none">
-                  <IconSpark width={18} height={18} className="text-amber" /> You should meet
-                </h2>
-                <div className="no-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-5 pb-2">
-                  <AnimatePresence initial={false}>
-                    {intros.map((p) => (
-                      <IntroCard
-                        key={p.id}
-                        p={p}
-                        onOpen={() => onPick(p)}
-                        onMessage={() => {
-                          hide(p.id);
-                          onMessage(p);
-                        }}
-                        onDismiss={() => hide(p.id)}
-                      />
-                    ))}
-                  </AnimatePresence>
-                </div>
-              </motion.section>
-            )}
+              {intros.length > 0 && (
+                <motion.section key="intros" exit={{ opacity: 0, height: 0 }} className="mb-6 overflow-hidden">
+                  <h2 className="flex items-center gap-2 px-5 pb-3 font-display text-[24px] leading-none">
+                    <IconSpark width={18} height={18} className="text-amber" /> You should meet
+                  </h2>
+                  <div className="no-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-5 pb-2">
+                    <AnimatePresence initial={false}>
+                      {intros.map((p) => (
+                        <IntroCard
+                          key={p.id}
+                          p={p}
+                          onOpen={() => onPick(p)}
+                          onMessage={() => {
+                            hide(p.id);
+                            onMessage(p);
+                          }}
+                          onDismiss={() => hide(p.id)}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                </motion.section>
+              )}
             </AnimatePresence>
 
-            {people.length > 3 && (
+            {total > 0 && (
               <div className="flex gap-2 px-5">
                 <input
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search skills, roles, names"
+                  placeholder="Find anyone: skill, role, name"
                   autoCapitalize="off"
                   className="h-11 min-w-0 flex-1 border-2 border-ink bg-card px-3 outline-none placeholder:text-ink/35 focus:bg-white"
                 />
@@ -142,36 +162,40 @@ export function Nearby({
                 </button>
               </div>
             )}
-            {list.length === 0 && people.length > 0 && <p className="px-5 pt-6 text-center text-[15px] text-muted">No one matches that right now.</p>}
 
-            {people.length === 0 ? (
+            {total === 0 ? (
               <Empty
                 title="No one else yet"
                 body={`Share Connect with the people you meet at ${EVENT.name}. The more who join, the better the intros.`}
                 action={<ShareApp />}
               />
+            ) : list.length === 0 ? (
+              <p className="px-5 pt-6 text-center text-[15px] text-muted">{query ? "No one here matches that." : "No matches nearby right now."}</p>
             ) : (
-              SECTIONS.map(({ band, title, hint }) => {
+              BANDS.map((band) => {
                 const group = list.filter((p) => p.band === band);
                 if (!group.length) return null;
                 return (
                   <section key={band} className="mt-6">
-                    <div className="flex items-baseline justify-between px-5 pb-2">
-                      <h2 className="font-display text-[22px] leading-none">{title}</h2>
-                      <span className="text-[13px] text-muted">{hint}</span>
-                    </div>
+                    <h2 className="px-5 pb-2 font-display text-[22px] leading-none">{BAND_TITLE[band]}</h2>
                     <ul className="grid grid-cols-1 gap-3 px-5">
                       {group.map((p, i) => (
-                        <PersonRow key={p.id} p={p} i={i} isMatch={introIds.has(p.id)} onClick={() => onPick(p)} />
+                        <PersonRow key={p.id} p={p} i={i} isMatch={introIds.has(p.id) || p.match > 0} onClick={() => onPick(p)} />
                       ))}
                     </ul>
                   </section>
                 );
               })
             )}
+
+            {!query && (result.more ?? 0) > 0 && (
+              <p className="mx-5 mt-6 border-2 border-dashed border-ink/30 p-4 text-center text-[15px]">
+                <b>{result.more} more</b> elsewhere at the venue. Search to find anyone.
+              </p>
+            )}
             {error && <p className="mt-4 text-center text-[13px] text-muted">Offline? Retrying…</p>}
             <p className="mx-auto mt-8 max-w-[300px] px-5 text-center text-[13px] text-muted">
-              Distances are rough. GPS indoors can be off by 20m+. Use "find me" notes, photos and messages to find each other.
+              Distances are a rough guide. Use "find me" notes, photos, messages and Light up to find each other.
             </p>
           </>
         )}
@@ -209,9 +233,7 @@ function IntroCard({
         <Avatar name={p.name} photo={p.photo} seed={p.id} size={52} />
         <div className="min-w-0">
           <div className="truncate text-[17px] font-semibold">{p.name}</div>
-          <div className="truncate text-[14px]">
-            ~{km(p.distance)} · {[p.title, p.company].filter(Boolean).join(" · ") || p.tags[0] || ""}
-          </div>
+          <div className="truncate text-[14px]">{where(p)}</div>
         </div>
       </button>
       <p className="mt-3 flex-1 text-[15px] leading-snug">{p.reasons[0]}</p>
@@ -222,31 +244,31 @@ function IntroCard({
   );
 }
 
+// The "find me" note leads; distance is a soft hint; stale people fade.
 function PersonRow({ p, i, isMatch, onClick }: { p: NearbyPerson; i: number; isMatch: boolean; onClick: () => void }) {
+  const stale = p.seenAgo >= STALE_S;
   return (
-    <motion.li initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 8) * 0.03 }}>
+    <motion.li initial={{ opacity: 0, y: 8 }} animate={{ opacity: stale ? 0.55 : 1, y: 0 }} transition={{ delay: Math.min(i, 8) * 0.03 }}>
       <button onClick={onClick} className="press pop-sm flex w-full items-center gap-3.5 border-2 border-ink bg-card p-3 text-left">
         <Avatar name={p.name} photo={p.photo} seed={p.id} size={56} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-center gap-1.5">
             <span className="truncate text-[17px] font-semibold">{p.name}</span>
             {isMatch && <IconSpark width={13} height={13} className="shrink-0 text-amber" />}
-            <span className="ml-auto shrink-0 text-[13px] font-medium text-flame">~{km(p.distance)}</span>
           </div>
-          {(p.title || p.company) && (
-            <div className="truncate text-[15px] text-muted">{[p.title, p.company].filter(Boolean).join(" · ")}</div>
-          )}
+          {(p.title || p.company) && <div className="truncate text-[14px] text-muted">{[p.title, p.company].filter(Boolean).join(" · ")}</div>}
           {p.findMe && (
-            <div className="mt-1 flex items-center gap-1 truncate text-[14px]">
-              <IconPin width={14} height={14} className="shrink-0 text-flame" />
+            <div className="mt-1 flex items-center gap-1 text-[15px] font-medium">
+              <IconPin width={15} height={15} className="shrink-0 text-flame" />
               <span className="truncate">{p.findMe}</span>
             </div>
           )}
+          <div className="mt-1 text-[12px] text-muted">
+            {where(p)}
+            {stale && ` · ${freshness(p.seenAgo)}`}
+          </div>
         </div>
-        <div className="flex flex-col items-end gap-1 self-stretch">
-          <IconChevron width={18} height={18} className="my-auto text-ink/30" />
-          {p.seenAgo >= 60 && <span className="text-[11px] text-muted">{ago(p.seenAgo)}</span>}
-        </div>
+        <IconChevron width={18} height={18} className="shrink-0 text-ink/30" />
       </button>
     </motion.li>
   );

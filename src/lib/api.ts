@@ -1,4 +1,4 @@
-import type { Conversation, Message, MyProfile, PingResult, Profile, ProfileInput, Thread } from "../../shared/types";
+import type { Conversation, Message, MyProfile, NearbyPerson, PingResult, Profile, ProfileInput, Thread } from "../../shared/types";
 
 const KEY = "connect.identity";
 
@@ -67,6 +67,7 @@ export const api = {
   ping: (id: Identity, lat: number, lng: number, accuracy: number) =>
     call<PingResult>("/api/me/ping", { method: "POST", body: JSON.stringify({ lat, lng, accuracy }) }, id),
   user: (userId: string) => call<Profile>(`/api/users/${userId}`),
+  search: (id: Identity, q: string) => call<NearbyPerson[]>(`/api/me/search?q=${encodeURIComponent(q)}`, {}, id),
   threads: (id: Identity) => call<Thread[]>("/api/me/threads", {}, id),
   messages: (id: Identity, other: string, after = 0) =>
     call<Conversation>(`/api/me/messages/${other}?after=${after}`, {}, id),

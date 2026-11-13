@@ -96,7 +96,7 @@ export function match(me: Side, them: Side, band: Band, rarity: Rarity = () => 1
   hits.sort((a, b) => b.score - a.score);
   let score = hits.reduce((t, h) => t + h.score, 0);
   // Only boost by distance when there's already a reason to meet.
-  if (score > 0) score += band === "close" ? 2 : band === "near" ? 1 : 0;
+  if (score > 0) score += band === "steps" ? 2 : band === "near" ? 1 : 0;
   return { score: Math.round(score * 10) / 10, reasons: hits.slice(0, 2).map((h) => h.say) };
 }
 

@@ -6,19 +6,26 @@ import type { NearbyPerson, Profile } from "../../shared/types";
 import { api } from "../lib/api";
 import { Avatar } from "./Avatar";
 import { Tag } from "./Chips";
-import { bandLabel, km } from "./format";
+import { freshness, range, where } from "./format";
+import { LightUp } from "./LightUp";
+import type { Identity } from "../lib/api";
 import { IconChat, IconGlobe, IconLinkedIn, IconPin, IconShare, IconSpark, IconX } from "./icons";
 
 export function PersonSheet({
   person,
+  identity,
+  myName,
   onClose,
   onMessage,
 }: {
   person: NearbyPerson | null;
+  identity: Identity;
+  myName: string;
   onClose: () => void;
   onMessage: (p: NearbyPerson) => void;
 }) {
   const [full, setFull] = useState<Profile | null>(null);
+  const [lit, setLit] = useState(false);
 
   useEffect(() => {
     setFull(null);
@@ -51,14 +58,35 @@ export function PersonSheet({
                     <p className="mt-1 text-[16px] text-muted">{[p.title, p.company].filter(Boolean).join(" · ")}</p>
                   )}
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    <Tag tone="ink">
-                      {bandLabel(person.band)} · ~{km(person.distance)}
-                    </Tag>
+                    <Tag tone="ink">{where(person)}</Tag>
                     {p.tags.map((t) => (
                       <Tag key={t}>{t}</Tag>
                     ))}
                   </div>
                 </div>
+              </div>
+
+              {/* Where to find them: the note does the real work, distance is a hint. */}
+              <div className="mt-5 border-2 border-ink bg-card p-4">
+                <div className="flex items-start gap-3">
+                  <IconPin className="mt-0.5 shrink-0 text-flame" />
+                  <div className="min-w-0 flex-1">
+                    <div className={`text-[18px] leading-snug font-semibold ${p.findMe ? "" : "text-muted"}`}>
+                      {p.findMe || "No \"find me\" note yet. Message them to ask where they are."}
+                    </div>
+                    <div className="mt-1 text-[14px] text-muted">
+                      {range(person)} · {freshness(person.seenAgo)}
+                    </div>
+                  </div>
+                </div>
+                {(person.band === "steps" || person.band === "near") && (
+                  <button
+                    onClick={() => setLit(true)}
+                    className="press pop-sm mt-3 h-11 w-full border-2 border-ink bg-amber text-[15px] font-semibold"
+                  >
+                    Light up to spot each other
+                  </button>
+                )}
               </div>
 
               {person.reasons.length > 0 && (
@@ -71,16 +99,6 @@ export function PersonSheet({
                       <li key={r}>{r}</li>
                     ))}
                   </ul>
-                </div>
-              )}
-
-              {p.findMe && (
-                <div className="mt-4 flex items-start gap-3 border-2 border-ink bg-card p-4">
-                  <IconPin className="mt-0.5 shrink-0 text-flame" />
-                  <div>
-                    <div className="text-[12px] font-semibold tracking-wide text-muted uppercase">Find me</div>
-                    <div className="text-[17px] font-medium">{p.findMe}</div>
-                  </div>
                 </div>
               )}
 
@@ -138,6 +156,7 @@ export function PersonSheet({
           )}
         </Drawer.Content>
       </Drawer.Portal>
+      {lit && person && <LightUp identity={identity} myName={myName} other={person} onClose={() => setLit(false)} />}
     </Drawer.Root>
   );
 }
