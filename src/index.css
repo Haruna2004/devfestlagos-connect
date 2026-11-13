@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/* DevFest Lagos: warm paper, ink blocks, amber + Google accents, square edges. */
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Faculty Glyphic", "Geist", Georgia, serif;
+
+  --color-paper: #fff5d4;
+  --color-paper-deep: #f6e6b0;
+  --color-card: #fffaea;
+  --color-ink: #171717;
+  --color-muted: #6b665c;
+  --color-line: #e6d9ad;
+  --color-amber: #f9ab00;
+  --color-flame: #f04e23;
+  --color-g-blue: #4285f4;
+  --color-g-red: #ea4335;
+  --color-g-yellow: #fbbc04;
+  --color-g-green: #34a853;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  a,
+  [role="button"] {
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  input,
+  textarea {
+    font-size: 16px; /* stops iOS zoom on focus */
+  }
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Hard offset shadow, like a printed sticker. */
+@utility pop {
+  box-shadow: 4px 4px 0 var(--color-ink);
+}
+@utility pop-sm {
+  box-shadow: 2px 2px 0 var(--color-ink);
+}
+
+@utility press {
+  transition:
+    transform 110ms ease,
+    box-shadow 110ms ease,
+    opacity 110ms ease;
+  &:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 var(--color-ink);
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Faint ink grid, like graph paper. */
+@utility grid-paper {
+  background-image:
+    linear-gradient(to right, rgb(23 23 23 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(23 23 23 / 0.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(0.6);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.8);
+    opacity: 0;
+  }
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

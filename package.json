@@ -1,0 +1,38 @@
+{
+  "name": "devfestlagos-connect",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "db:local": "wrangler d1 migrations apply devfestlagos-connect --local",
+    "db:remote": "wrangler d1 migrations apply devfestlagos-connect --remote",
+    "cf-typegen": "wrangler types",
+    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json"
+  },
+  "dependencies": {
+    "hono": "^4.13.14",
+    "motion": "^14.7.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "vaul": "^1.1.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.66.0",
+    "@cloudflare/workers-types": "^5.20261028.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vite-pwa/assets-generator": "^2.0.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0",
+    "wrangler": "^4.155.0"
+  },
+  "description": "See who's around you at DevFest Lagos. Open source PWA on Cloudflare.",
+  "license": "MIT"
+}

@@ -1,0 +1,520 @@
+import { Hono } from "hono";
+import type { Context } from "hono";
+import { INTRO_MIN, match } from "../shared/match";
+import { LIMITS, LOOKING_FOR, ROLE_TAGS } from "../shared/types";
+import type {
+  Band,
+  Conversation,
+  Links,
+  Message,
+  MyProfile,
+  NearbyPerson,
+  PersonLite,
+  PingResult,
+  Profile,
+  ProfileInput,
+  Thread,
+} from "../shared/types";
+
+type Env = {
+  DB: D1Database;
+  PHOTOS: R2Bucket;
+  VENUE_LAT: string;
+  VENUE_LNG: string;
+  VENUE_RADIUS_M: string;
+};
+
+type Row = {
+  id: string;
+  secret_hash: string;
+  name: string;
+  title: string;
+  company: string;
+  bio: string;
+  find_me: string;
+  tags: string;
+  looking_for: string;
+  links: string;
+  photo: string | null;
+  visible: number;
+  lat: number | null;
+  lng: number | null;
+  accuracy: number | null;
+  seen_at: number | null;
+};
+
+type Ctx = Context<{ Bindings: Env; Variables: { me: Row } }>;
+
+const STALE_MS = 10 * 60 * 1000; // hide people not seen for 10 min
+const SNAPSHOT_MS = 8000; // share one DB read across pings
+const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
+
+const app = new Hono<{ Bindings: Env; Variables: { me: Row } }>();
+
+// ---------- helpers ----------
+
+const now = () => Date.now();
+
+function randomId(bytes: number) {
+  const a = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(a, (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(
+    "",
+  );
+}
+
+async function sha256(s: string) {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(s),
+  );
+  return Array.from(new Uint8Array(buf), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+function metres(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function parse<T>(s: string, fallback: T): T {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function toProfile(r: Row): Profile {
+  return {
+    id: r.id,
+    name: r.name,
+    title: r.title,
+    company: r.company,
+    bio: r.bio,
+    findMe: r.find_me,
+    tags: parse(r.tags, []),
+    lookingFor: parse(r.looking_for, []),
+    links: parse(r.links, {}),
+    photo: r.photo ? `/photos/${r.photo}` : null,
+  };
+}
+
+const toMine = (r: Row): MyProfile => ({
+  ...toProfile(r),
+  visible: r.visible === 1,
+});
+
+const clip = (v: unknown, max: number) =>
+  typeof v === "string" ? v.trim().slice(0, max) : undefined;
+
+function cleanLink(v: unknown) {
+  const s = clip(v, LIMITS.link);
+  if (!s) return undefined;
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`;
+}
+
+// Turns client input into DB columns. Unknown or invalid fields are dropped.
+function toColumns(input: ProfileInput) {
+  const cols: Record<string, string | number> = {};
+  const name = clip(input.name, LIMITS.name);
+  if (name !== undefined) cols.name = name;
+  const title = clip(input.title, LIMITS.title);
+  if (title !== undefined) cols.title = title;
+  const company = clip(input.company, LIMITS.company);
+  if (company !== undefined) cols.company = company;
+  const bio = clip(input.bio, LIMITS.bio);
+  if (bio !== undefined) cols.bio = bio;
+  const findMe = clip(input.findMe, LIMITS.findMe);
+  if (findMe !== undefined) cols.find_me = findMe;
+  if (Array.isArray(input.tags)) {
+    cols.tags = JSON.stringify(
+      input.tags
+        .filter((t) => (ROLE_TAGS as readonly string[]).includes(t))
+        .slice(0, 3),
+    );
+  }
+  if (Array.isArray(input.lookingFor)) {
+    cols.looking_for = JSON.stringify(
+      input.lookingFor
+        .filter((t) => (LOOKING_FOR as readonly string[]).includes(t))
+        .slice(0, 4),
+    );
+  }
+  if (input.links && typeof input.links === "object") {
+    const links: Links = {
+      linkedin: cleanLink(input.links.linkedin),
+      x: cleanLink(input.links.x),
+      website: cleanLink(input.links.website),
+    };
+    cols.links = JSON.stringify(links);
+  }
+  if (typeof input.visible === "boolean") cols.visible = input.visible ? 1 : 0;
+  return cols;
+}
+
+// ---------- auth: "Authorization: Bearer <id>.<secret>" ----------
+
+async function auth(c: Ctx, next: () => Promise<void>) {
+  const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  const [id, secret] = token.split(".");
+  if (!id || !secret) return c.json({ error: "unauthorized" }, 401);
+  const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
+    .bind(id)
+    .first<Row>();
+  if (!row || row.secret_hash !== (await sha256(secret)))
+    return c.json({ error: "unauthorized" }, 401);
+  c.set("me", row);
+  await next();
+}
+
+// ---------- routes ----------
+
+app.post("/api/me", async (c) => {
+  const input = await c.req
+    .json<ProfileInput>()
+    .catch(() => ({}) as ProfileInput);
+  const cols = toColumns(input);
+  if (!cols.name) return c.json({ error: "name required" }, 400);
+  const id = randomId(10);
+  const secret = randomId(32);
+  const t = now();
+  const all = {
+    ...cols,
+    id,
+    secret_hash: await sha256(secret),
+    created_at: t,
+    updated_at: t,
+  };
+  const keys = Object.keys(all);
+  await c.env.DB.prepare(
+    `INSERT INTO users (${keys.join(",")}) VALUES (${keys.map(() => "?").join(",")})`,
+  )
+    .bind(...Object.values(all))
+    .run();
+  const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
+    .bind(id)
+    .first<Row>();
+  return c.json({ id, secret, profile: toMine(row!) });
+});
+
+app.get("/api/me", auth, (c) => c.json(toMine(c.get("me"))));
+
+app.patch("/api/me", auth, async (c) => {
+  const me = c.get("me");
+  const cols = toColumns(await c.req.json<ProfileInput>().catch(() => ({})));
+  if (cols.name === "") return c.json({ error: "name required" }, 400);
+  if (Object.keys(cols).length) {
+    cols.updated_at = now();
+    const keys = Object.keys(cols);
+    await c.env.DB.prepare(
+      `UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
+    )
+      .bind(...Object.values(cols), me.id)
+      .run();
+    snapshot = null;
+  }
+  const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
+    .bind(me.id)
+    .first<Row>();
+  return c.json(toMine(row!));
+});
+
+app.delete("/api/me", auth, async (c) => {
+  const me = c.get("me");
+  if (me.photo) await c.env.PHOTOS.delete(me.photo);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(me.id),
+    c.env.DB.prepare("DELETE FROM messages WHERE from_id = ?1 OR to_id = ?1").bind(me.id),
+    c.env.DB.prepare("DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1").bind(me.id),
+  ]);
+  snapshot = null;
+  return c.json({ ok: true });
+});
+
+app.put("/api/me/photo", auth, async (c) => {
+  const me = c.get("me");
+  const type = c.req.header("content-type") ?? "";
+  if (!/^image\/(jpeg|webp|png)$/.test(type))
+    return c.json({ error: "bad image type" }, 400);
+  const body = await c.req.arrayBuffer();
+  if (body.byteLength > MAX_PHOTO_BYTES)
+    return c.json({ error: "image too large" }, 413);
+  const key = `${me.id}/${now()}`;
+  await c.env.PHOTOS.put(key, body, { httpMetadata: { contentType: type } });
+  await c.env.DB.prepare(
+    "UPDATE users SET photo = ?, updated_at = ? WHERE id = ?",
+  )
+    .bind(key, now(), me.id)
+    .run();
+  if (me.photo) await c.env.PHOTOS.delete(me.photo);
+  snapshot = null;
+  return c.json({ photo: `/photos/${key}` });
+});
+
+app.get("/api/users/:id", async (c) => {
+  const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?")
+    .bind(c.req.param("id"))
+    .first<Row>();
+  if (!row) return c.json({ error: "not found" }, 404);
+  return c.json(toProfile(row));
+});
+
+// Everyone visible and recently seen. Cached briefly in the isolate so
+// hundreds of pings per minute share one query.
+type Snap = { at: number; rows: Row[] };
+let snapshot: Snap | null = null;
+
+async function getSnapshot(env: Env) {
+  if (snapshot && now() - snapshot.at < SNAPSHOT_MS) return snapshot.rows;
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM users WHERE visible = 1 AND seen_at > ? AND lat IS NOT NULL",
+  )
+    .bind(now() - STALE_MS)
+    .all<Row>();
+  snapshot = { at: now(), rows: results };
+  return results;
+}
+
+function band(d: number): Band {
+  if (d <= 30) return "close";
+  if (d <= 100) return "near";
+  return "venue";
+}
+
+app.post("/api/me/ping", auth, async (c) => {
+  const me = c.get("me");
+  const body = await c.req
+    .json<{ lat: number; lng: number; accuracy: number }>()
+    .catch(() => null);
+  if (!body || !Number.isFinite(body.lat) || !Number.isFinite(body.lng))
+    return c.json({ error: "bad location" }, 400);
+  const { lat, lng } = body;
+  const accuracy = Number.isFinite(body.accuracy)
+    ? Math.min(body.accuracy, 5000)
+    : 100;
+
+  const vLat = Number(c.env.VENUE_LAT);
+  const vLng = Number(c.env.VENUE_LNG);
+  const radius = Number(c.env.VENUE_RADIUS_M) || 0;
+  const venueDistance = Math.round(metres(lat, lng, vLat, vLng));
+  // Give a bad GPS fix some benefit of the doubt, up to 200m.
+  const atVenue =
+    radius === 0 || venueDistance <= radius + Math.min(accuracy, 200);
+
+  // Only store location while at the venue. Outside, clear it.
+  await c.env.DB.prepare(
+    "UPDATE users SET lat = ?, lng = ?, accuracy = ?, seen_at = ? WHERE id = ?",
+  )
+    .bind(
+      atVenue ? lat : null,
+      atVenue ? lng : null,
+      atVenue ? accuracy : null,
+      now(),
+      me.id,
+    )
+    .run();
+
+  const unread = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM messages WHERE to_id = ? AND read_at IS NULL",
+  )
+    .bind(me.id)
+    .first<number>("n");
+
+  const result: PingResult = { atVenue, venueDistance, people: [], intros: [], unread: unread ?? 0 };
+  if (!atVenue) return c.json(result);
+
+  const blocked = await blockedSet(c.env, me.id);
+  const mine = toProfile(me);
+  const t = now();
+  const people: NearbyPerson[] = [];
+  for (const r of await getSnapshot(c.env)) {
+    if (r.id === me.id || r.lat == null || r.lng == null || blocked.has(r.id)) continue;
+    const d = metres(lat, lng, r.lat, r.lng);
+    const p = toProfile(r);
+    const b = band(d);
+    const m = match(mine, p, b);
+    people.push({
+      id: p.id,
+      name: p.name,
+      title: p.title,
+      company: p.company,
+      photo: p.photo,
+      findMe: p.findMe,
+      tags: p.tags,
+      lookingFor: p.lookingFor,
+      distance: Math.max(5, Math.round(d / 5) * 5),
+      band: b,
+      seenAgo: Math.max(0, Math.round((t - (r.seen_at ?? t)) / 1000)),
+      match: m.score,
+      reasons: m.reasons,
+    });
+  }
+  people.sort((a, b) => a.distance - b.distance);
+  result.people = people.slice(0, 200);
+  result.intros = result.people
+    .filter((p) => p.match >= INTRO_MIN)
+    .sort((a, b) => b.match - a.match || a.distance - b.distance)
+    .slice(0, 5)
+    .map((p) => p.id);
+  return c.json(result);
+});
+
+// ---------- messages ----------
+
+// People I blocked, plus people who blocked me. Either way we don't see each other.
+async function blockedSet(env: Env, id: string) {
+  const { results } = await env.DB.prepare(
+    "SELECT blocked AS id FROM blocks WHERE blocker = ?1 UNION SELECT blocker AS id FROM blocks WHERE blocked = ?1",
+  )
+    .bind(id)
+    .all<{ id: string }>();
+  return new Set(results.map((r) => r.id));
+}
+
+type MsgRow = { id: number; from_id: string; to_id: string; body: string; created_at: number };
+
+const toMessage = (r: MsgRow): Message => ({ id: r.id, from: r.from_id, to: r.to_id, body: r.body, at: r.created_at });
+
+const toLite = (r: Row): PersonLite => ({
+  id: r.id,
+  name: r.name,
+  title: r.title,
+  company: r.company,
+  photo: r.photo ? `/photos/${r.photo}` : null,
+});
+
+const MSG_PER_MIN = 20;
+
+app.get("/api/me/threads", auth, async (c) => {
+  const me = c.get("me");
+  // Latest message per person I've talked with.
+  const { results: lasts } = await c.env.DB.prepare(
+    `SELECT m.* FROM messages m
+     JOIN (
+       SELECT CASE WHEN from_id = ?1 THEN to_id ELSE from_id END AS other, MAX(id) AS last_id
+       FROM messages WHERE from_id = ?1 OR to_id = ?1 GROUP BY other
+     ) t ON m.id = t.last_id
+     ORDER BY m.id DESC LIMIT 50`,
+  )
+    .bind(me.id)
+    .all<MsgRow>();
+  if (!lasts.length) return c.json([] as Thread[]);
+
+  const others = lasts.map((m) => (m.from_id === me.id ? m.to_id : m.from_id));
+  const marks = others.map(() => "?").join(",");
+  const [{ results: users }, { results: counts }, blocked] = await Promise.all([
+    c.env.DB.prepare(`SELECT * FROM users WHERE id IN (${marks})`).bind(...others).all<Row>(),
+    c.env.DB.prepare(
+      "SELECT from_id, COUNT(*) AS n FROM messages WHERE to_id = ? AND read_at IS NULL GROUP BY from_id",
+    )
+      .bind(me.id)
+      .all<{ from_id: string; n: number }>(),
+    blockedSet(c.env, me.id),
+  ]);
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const unread = new Map(counts.map((r) => [r.from_id, r.n]));
+
+  const threads: Thread[] = [];
+  lasts.forEach((m, i) => {
+    const u = byId.get(others[i]);
+    if (!u || blocked.has(u.id)) return;
+    threads.push({ person: toLite(u), last: toMessage(m), unread: unread.get(u.id) ?? 0 });
+  });
+  return c.json(threads);
+});
+
+app.get("/api/me/messages/:other", auth, async (c) => {
+  const me = c.get("me");
+  const other = c.req.param("other") ?? "";
+  const after = Number(c.req.query("after")) || 0;
+  const [user, { results }, iBlocked] = await Promise.all([
+    c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(other).first<Row>(),
+    c.env.DB.prepare(
+      `SELECT * FROM messages
+       WHERE id > ?3 AND ((from_id = ?1 AND to_id = ?2) OR (from_id = ?2 AND to_id = ?1))
+       ORDER BY id DESC LIMIT 200`,
+    )
+      .bind(me.id, other, after)
+      .all<MsgRow>(),
+    c.env.DB.prepare("SELECT 1 FROM blocks WHERE blocker = ? AND blocked = ?").bind(me.id, other).first(),
+  ]);
+  if (results.some((m) => m.to_id === me.id)) {
+    await c.env.DB.prepare("UPDATE messages SET read_at = ? WHERE to_id = ? AND from_id = ? AND read_at IS NULL")
+      .bind(now(), me.id, other)
+      .run();
+  }
+  const convo: Conversation = {
+    person: user ? toLite(user) : null,
+    messages: results.reverse().map(toMessage),
+    blocked: !!iBlocked,
+  };
+  return c.json(convo);
+});
+
+app.post("/api/me/messages/:other", auth, async (c) => {
+  const me = c.get("me");
+  const other = c.req.param("other") ?? "";
+  const input = await c.req.json<{ body?: string }>().catch(() => ({}) as { body?: string });
+  const body = clip(input.body, LIMITS.message);
+  if (!body) return c.json({ error: "Message is empty" }, 400);
+  if (other === me.id) return c.json({ error: "That's you" }, 400);
+
+  const [target, blocked, recent] = await Promise.all([
+    c.env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(other).first(),
+    blockedSet(c.env, me.id),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE from_id = ? AND created_at > ?")
+      .bind(me.id, now() - 60_000)
+      .first<number>("n"),
+  ]);
+  if (!target) return c.json({ error: "This person deleted their card" }, 404);
+  if (blocked.has(other)) return c.json({ error: "You can't message this person" }, 403);
+  if ((recent ?? 0) >= MSG_PER_MIN) return c.json({ error: "Slow down a little" }, 429);
+
+  const t = now();
+  const row = await c.env.DB.prepare(
+    "INSERT INTO messages (from_id, to_id, body, created_at) VALUES (?, ?, ?, ?) RETURNING *",
+  )
+    .bind(me.id, other, body, t)
+    .first<MsgRow>();
+  return c.json(toMessage(row!));
+});
+
+app.put("/api/me/blocks/:other", auth, async (c) => {
+  const me = c.get("me");
+  await c.env.DB.prepare("INSERT OR IGNORE INTO blocks (blocker, blocked, created_at) VALUES (?, ?, ?)")
+    .bind(me.id, c.req.param("other"), now())
+    .run();
+  return c.json({ ok: true });
+});
+
+app.delete("/api/me/blocks/:other", auth, async (c) => {
+  const me = c.get("me");
+  await c.env.DB.prepare("DELETE FROM blocks WHERE blocker = ? AND blocked = ?")
+    .bind(me.id, c.req.param("other"))
+    .run();
+  return c.json({ ok: true });
+});
+
+app.get("/photos/*", async (c) => {
+  const key = c.req.path.replace(/^\/photos\//, "");
+  const obj = await c.env.PHOTOS.get(key);
+  if (!obj) return c.notFound();
+  return new Response(obj.body, {
+    headers: {
+      "content-type": obj.httpMetadata?.contentType ?? "image/jpeg",
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+    },
+  });
+});
+
+app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
+
+export default app;
