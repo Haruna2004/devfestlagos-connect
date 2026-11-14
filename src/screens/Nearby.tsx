@@ -6,6 +6,7 @@ import type { Band, MyProfile, NearbyPerson } from "../../shared/types";
 import { Avatar } from "../components/Avatar";
 import { TopBar } from "../components/Brand";
 import { Radar } from "../components/Radar";
+import { ShareSheet } from "../components/ShareSheet";
 import { BAND_TITLE, freshness, gpsQuality, km, STALE_S, where } from "../components/format";
 import { IconChevron, IconClose, IconEyeOff, IconPin, IconShare, IconSpark } from "../components/icons";
 import { api } from "../lib/api";
@@ -197,6 +198,7 @@ export function Nearby({
             <p className="mx-auto mt-8 max-w-[300px] px-5 text-center text-[13px] text-muted">
               Distances are a rough guide. Use "find me" notes, photos, messages and Light up to find each other.
             </p>
+            {total > 0 && <ShareLink />}
           </>
         )}
       </div>
@@ -366,21 +368,29 @@ function Skeletons() {
   );
 }
 
-function ShareApp() {
+function ShareLink() {
+  const [open, setOpen] = useState(false);
   return (
-    <button
-      onClick={async () => {
-        const data = { title: `${EVENT.name} ${EVENT.app}`, text: EVENT.shareText, url: location.origin };
-        try {
-          if (navigator.share) await navigator.share(data);
-          else await navigator.clipboard.writeText(data.url);
-        } catch {
-          // cancelled
-        }
-      }}
-      className="press pop flex h-14 w-full items-center justify-center gap-2 border-2 border-ink bg-ink text-[17px] font-semibold text-paper"
-    >
-      <IconShare width={20} height={20} /> Share Connect
-    </button>
+    <>
+      <button onClick={() => setOpen(true)} className="mx-auto mt-3 flex items-center gap-1.5 px-3 py-2 text-[14px] font-semibold underline underline-offset-4">
+        <IconShare width={16} height={16} /> Share Connect
+      </button>
+      <ShareSheet open={open} onClose={() => setOpen(false)} />
+    </>
+  );
+}
+
+function ShareApp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="press pop flex h-14 w-full items-center justify-center gap-2 border-2 border-ink bg-ink text-[17px] font-semibold text-paper"
+      >
+        <IconShare width={20} height={20} /> Share Connect
+      </button>
+      <ShareSheet open={open} onClose={() => setOpen(false)} />
+    </>
   );
 }
