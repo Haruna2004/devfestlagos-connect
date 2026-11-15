@@ -26,7 +26,7 @@
     // Landmark Event Centre, Oniru, Lagos. Set VENUE_RADIUS_M to "0" to allow anywhere.
     "VENUE_LAT": "6.42312",
     "VENUE_LNG": "3.44535",
-    "VENUE_RADIUS_M": "0"
+    "VENUE_RADIUS_M": "250"
   },
   "observability": { "enabled": true }
 }
